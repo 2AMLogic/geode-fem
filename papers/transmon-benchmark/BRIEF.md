@@ -12,6 +12,8 @@ claim_area: "cross-solver validation of open-source finite-element electromagnet
 closest_prior_work: "Palace (unpublished software); DeviceLayout.jl transmon workflow (blog/talk only); TEAM benchmark-problem tradition in computational electromagnetics; EPR/BBQ quantization papers for the physics framing"
 ---
 
+> **Archived versions.** Only the current and the Zenodo-published version of this thread are kept in-tree. Earlier `<thread>.N/` snapshots and their critic siblings (mentioned in the history below) were pruned from `main` in #1416 and live at the git tag `papers-archive-2026-11`; recover one with `git checkout papers-archive-2026-11 -- papers/<thread>/<thread>.N`.
+
 # Brief: the transmon cross-validation benchmark paper
 
 ## v24 — published on Zenodo (v1), 2026-10-25 — CURRENT

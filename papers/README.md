@@ -2,21 +2,39 @@
 
 Paper threads written with the Anvil `paper` skill. Each thread lives in
 `papers/<thread>/`. Each version is an immutable `<thread>.N/` dir, with critic
-siblings next to it (`.review/`, `.audit/`, `.numeric/`, ...). The current
+siblings next to it (`.review/`, `.audit/`, `.numeric/`, ...). Only the current
+version and the Zenodo-published version of each thread are kept in-tree; older
+versions are archived (see [Archived versions](#archived-versions)). The kept
 versions are:
 
-| Thread | Current version |
+| Thread | Current and published versions |
 |---|---|
 | [`conformal-antenna-diffopt`](conformal-antenna-diffopt/BRIEF.md) | [`conformal-antenna-diffopt.14/`](conformal-antenna-diffopt/conformal-antenna-diffopt.14/main.tex) (v13 text revision, #1231: the dual arithmetic is described as a plain-Rust dual-number type checked against the Burn production kernels, not run inside a tensor stack; `main.pdf` not yet built, build with `papers/build.sh` before the Zenodo re-upload; published Zenodo v1 is [`.13/`](conformal-antenna-diffopt/conformal-antenna-diffopt.13/main.pdf), DOI 10.5281/zenodo.21480892) |
 | [`transmon-benchmark`](transmon-benchmark/BRIEF.md) | [`transmon-benchmark.25/`](transmon-benchmark/transmon-benchmark.25/main.tex) (v24 text revision, #1231: Figure 4 legend reads p = 1 and p = 2, and its panel (b) title reads "tensor − scalar" instead of "gap"; the numbers are unchanged; `main.pdf` not yet built, build with `papers/build.sh` before the Zenodo re-upload; published Zenodo v1 is [`.24/`](transmon-benchmark/transmon-benchmark.24/main.pdf), DOI 10.5281/zenodo.23580545) |
 | [`motor-gradient-optimization`](motor-gradient-optimization/BRIEF.md) | [`motor-gradient-optimization.24/`](motor-gradient-optimization/motor-gradient-optimization.24/main.tex) (v23 text revision, #1231: the validation-anchor mean no longer uses the symbol of vacuum permeability, SLSQP's BFGS estimate is named among the fitted search models, the abstract's pair count and four-start factor are stated unambiguously; the numbers are unchanged; `main.pdf` not yet built, build with `papers/build.sh` before the Zenodo re-upload; published Zenodo v1 is [`.23/`](motor-gradient-optimization/motor-gradient-optimization.23/main.pdf), DOI 10.5281/zenodo.23580548; raw traces DOI 10.5281/zenodo.23580550) |
+
+## Archived versions
+
+The superseded `<thread>.N/` snapshots and their critic siblings were pruned
+from `main` in #1416. They are preserved at the annotated git tag
+**`papers-archive-2026-11`**, which points at the last commit that still had
+them. To recover one:
+
+```bash
+git checkout papers-archive-2026-11 -- papers/<thread>/<thread>.N
+# or read a single file without touching the tree:
+git show papers-archive-2026-11:papers/transmon-benchmark/transmon-benchmark.8/main.tex
+```
+
+Prose in the `BRIEF.md` files and in older docs that mentions a pruned version
+refers to this archive.
 
 ## Building a paper
 
 The quickest way, from the repo root:
 
 ```bash
-papers/build.sh papers/conformal-antenna-diffopt/conformal-antenna-diffopt.4
+papers/build.sh papers/conformal-antenna-diffopt/conformal-antenna-diffopt.14
 ```
 
 The script runs this sequence inside the version dir:
@@ -37,7 +55,7 @@ labels haven't converged after 5 passes. Full output goes to
 latexmk also works from inside the version dir, and it runs bibtex itself:
 
 ```bash
-cd papers/conformal-antenna-diffopt/conformal-antenna-diffopt.4
+cd papers/conformal-antenna-diffopt/conformal-antenna-diffopt.14
 latexmk -pdf -interaction=nonstopmode main.tex
 ```
 
@@ -85,11 +103,11 @@ only ever hold class or style files, and never a `.bbl` or `.aux`.
   is just the version dir. When `paper-revise` creates `<thread>.N+1/`, copy
   `anvil-paper.cls` forward along with `figures/`. For a new thread, copy it
   from `papers/_shared/`.
-- **Don't edit the copies in historical versions.** They're frozen snapshots.
+- **Don't edit the copies in published versions.** They're frozen snapshots.
   `build.sh` prints a note if a version's copy differs from `_shared`.
 - **`_shared` is pinned on purpose.** It matches, byte for byte, the copy that
-  `transmon-benchmark.1`–`.6` and `conformal-antenna-diffopt.4` were built
-  against (sha256 `04d59909…a565e`, header "Default LaTeX class for
+  `transmon-benchmark.1`–`.6` and `conformal-antenna-diffopt.4` (both archived,
+  see below) were built against (sha256 `04d59909…a565e`, header "Default LaTeX class for
   anvil:pub"). Upstream Anvil has since revised the class: it loads
   `longtable`, `array`, and `calc` before `caption` (anvil#1328). Refreshing
   `_shared` from upstream is a deliberate change, and you should rebuild the

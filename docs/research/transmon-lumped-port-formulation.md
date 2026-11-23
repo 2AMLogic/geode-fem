@@ -137,7 +137,7 @@ Of the curation's three candidate causes (formulation, element values, patch geo
 the answer is **none of them**. The cause is the solve window. The paper draft's claim
 that "Palace's projected eigensolve hunted at σ = 4.5 GHz and found nothing below 5.15"
 (`papers/transmon-benchmark/BRIEF.md:438`,
-`papers/transmon-benchmark/transmon-benchmark.3/main.tex:657-680`) misreads `Target`.
+`papers/transmon-benchmark/transmon-benchmark.3/main.tex:657-680`, archived at git tag `papers-archive-2026-11`) misreads `Target`.
 It needs correcting (phase P3).
 
 **Not yet verified at spike time; since confirmed by P1 (§10):** whether Palace *does* return about 3.45 GHz when asked

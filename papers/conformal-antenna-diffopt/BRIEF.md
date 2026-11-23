@@ -7,6 +7,8 @@ anonymous: false
 web_search: true
 ---
 
+> **Archived versions.** Only the current and the Zenodo-published version of this thread are kept in-tree. Earlier `<thread>.N/` snapshots and their critic siblings (mentioned in the history below) were pruned from `main` in #1416 and live at the git tag `papers-archive-2026-11`; recover one with `git checkout papers-archive-2026-11 -- papers/<thread>/<thread>.N`.
+
 # v13 — published on Zenodo (v1), 2026-10-25 — CURRENT
 
 **Published.** `conformal-antenna-diffopt.13/` is the paper of record for Zenodo v1, 23 pages.

@@ -48,7 +48,7 @@
 # (the qubit and five cavity modes); its worst case stays 0.032 %. The CPU
 # timing artifacts were relabelled in the same change
 # (benchmarks/transmon_bench_cpu/results_like_for_like_local.toml header).
-# papers/transmon-benchmark/transmon-benchmark.8/main.tex quotes the old key
+# papers/transmon-benchmark/transmon-benchmark.8/main.tex (archived at git tag papers-archive-2026-11) quotes the old key
 # names verbatim; the v9 pass updates it.
 # ---------------------------------------------------------------------------
 
