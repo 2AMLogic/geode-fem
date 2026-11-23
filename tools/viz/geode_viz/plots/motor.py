@@ -35,7 +35,6 @@ import numpy as np
 from geode_viz.io import load_results
 from geode_viz.plots._common import (
     column_arrays as _column_arrays,
-    iter_points as _iter_points,
     resolve_out as _resolve_out,
     subtitle_from_notes as _subtitle_from_notes,
 )

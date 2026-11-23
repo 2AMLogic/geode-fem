@@ -151,4 +151,4 @@ def resolve_out(
     return artifacts_dir(benchmark) / default_name
 
 
-__all__ = ["iter_points", "subtitle_from_notes", "resolve_out"]
+__all__ = ["iter_points", "column_arrays", "subtitle_from_notes", "resolve_out"]
