@@ -37,7 +37,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from geode_viz.io import load_results
-from geode_viz.paths import artifacts_dir
+from geode_viz.plots._common import iter_points as _iter_points
+from geode_viz.plots._common import resolve_out as _resolve_out
 from geode_viz.style import apply_style, footer
 
 # Default reference impedance for benchmarks that don't carry their
@@ -58,22 +59,6 @@ _PATCH_VARIANTS: dict[str, tuple[str, str]] = {
     "matched": ("results_matched.toml", "matched"),
     "unmatched": ("results.toml", "unmatched"),
 }
-
-
-def _iter_points(results: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    """Yield ``point_<N>`` tables from a benchmark TOML in N order."""
-    indexed: list[tuple[int, dict[str, Any]]] = []
-    for key, val in results.items():
-        if not (isinstance(key, str) and key.startswith("point_")):
-            continue
-        try:
-            idx = int(key.split("_", 1)[1])
-        except ValueError:
-            continue
-        if isinstance(val, dict):
-            indexed.append((idx, val))
-    indexed.sort(key=lambda kv: kv[0])
-    return (val for _, val in indexed)
 
 
 def _sweep_arrays(
@@ -162,17 +147,6 @@ def _load_patch_pair(
     except FileNotFoundError:
         secondary = None
     return primary, secondary, primary_label
-
-
-def _resolve_out(
-    benchmark: str, out: Path | None, default_name: str
-) -> Path:
-    """Resolve the on-disk output path for a plot, creating dirs."""
-    if out is not None:
-        out = Path(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        return out
-    return artifacts_dir(benchmark) / default_name
 
 
 def _set_db_ylim(ax: "plt.Axes", s11_db_arrays: Iterable[np.ndarray]) -> None:
