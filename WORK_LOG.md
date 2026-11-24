@@ -3,6 +3,15 @@
 Chronological record of merged pull requests and closed issues, newest first.
 Maintained automatically by the Loom Guide role; entries are appended, never edited.
 
+### 2026-11-24
+
+- **PR #1796**: refactor(viz): share column_arrays helper across motor, mie, spiral plots
+- **Issue #1795** (closed): Simplify viz plots: collapse three _sweep_arrays loops into one column_arrays helper
+
+### 2026-11-23
+
+- **PR #1790**: chore(deps): Bump jsonschema from 0.60.2 to 0.61.0
+
 ### 2026-11-20
 
 - **Issue #1481** (closed): Electrostatics: scalar P1 a-posteriori estimator, DWR for peak-field observable, adaptive loop (#1477 slice B)
