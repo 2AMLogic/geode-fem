@@ -34,7 +34,7 @@ import numpy as np
 
 from geode_viz.io import load_results
 from geode_viz.plots._common import (
-    iter_points as _iter_points,
+    column_arrays as _column_arrays,
     resolve_out as _resolve_out,
     subtitle_from_notes as _subtitle_from_notes,
 )
@@ -43,24 +43,10 @@ from geode_viz.style import apply_style, footer
 
 def _sweep_arrays(results: dict[str, Any]) -> dict[str, np.ndarray]:
     """Extract theta_r / T / rel-err arrays from a motor results TOML."""
-    theta: list[float] = []
-    t_analytic: list[float] = []
-    t_arkkio: list[float] = []
-    t_line: list[float] = []
-    err_arkkio: list[float] = []
-    for point in _iter_points(results):
-        theta.append(float(point["theta_r"]))
-        t_analytic.append(float(point["T_analytic"]))
-        t_arkkio.append(float(point["T_arkkio"]))
-        t_line.append(float(point["T_line"]))
-        err_arkkio.append(float(point["rel_err_arkkio"]))
-    return {
-        "theta_r": np.asarray(theta, dtype=float),
-        "T_analytic": np.asarray(t_analytic, dtype=float),
-        "T_arkkio": np.asarray(t_arkkio, dtype=float),
-        "T_line": np.asarray(t_line, dtype=float),
-        "rel_err_arkkio": np.asarray(err_arkkio, dtype=float),
-    }
+    return _column_arrays(
+        results,
+        ("theta_r", "T_analytic", "T_arkkio", "T_line", "rel_err_arkkio"),
+    )
 
 
 def _draw_torque(

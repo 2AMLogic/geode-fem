@@ -33,7 +33,7 @@ import numpy as np
 
 from geode_viz.io import load_results
 from geode_viz.plots._common import (
-    iter_points as _iter_points,
+    column_arrays as _column_arrays,
     resolve_out as _resolve_out,
     subtitle_from_notes as _subtitle_from_notes,
 )
@@ -44,21 +44,8 @@ def _sweep_arrays(
     results: dict[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Extract (f_ghz, l_nh, q, r_ohm) arrays from a results TOML."""
-    f_ghz: list[float] = []
-    l_nh: list[float] = []
-    q_vals: list[float] = []
-    r_ohm: list[float] = []
-    for point in _iter_points(results):
-        f_ghz.append(float(point["f_ghz"]))
-        l_nh.append(float(point["l_nh"]))
-        q_vals.append(float(point["q"]))
-        r_ohm.append(float(point["r_ohm"]))
-    return (
-        np.asarray(f_ghz, dtype=float),
-        np.asarray(l_nh, dtype=float),
-        np.asarray(q_vals, dtype=float),
-        np.asarray(r_ohm, dtype=float),
-    )
+    cols = _column_arrays(results, ("f_ghz", "l_nh", "q", "r_ohm"))
+    return cols["f_ghz"], cols["l_nh"], cols["q"], cols["r_ohm"]
 
 
 def _mohan_band(oracles: dict[str, Any]) -> tuple[float, float] | None:

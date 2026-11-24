@@ -35,7 +35,7 @@ import numpy as np
 
 from geode_viz.io import load_results
 from geode_viz.plots._common import (
-    iter_points as _iter_points,
+    column_arrays as _column_arrays,
     resolve_out as _resolve_out,
     subtitle_from_notes as _subtitle_from_notes,
 )
@@ -46,30 +46,18 @@ def _sweep_arrays(
     results: dict[str, Any],
 ) -> dict[str, np.ndarray]:
     """Extract ka / Q / rel-err arrays from a Mie driven results TOML."""
-    ka: list[float] = []
-    q_ext_a: list[float] = []
-    q_sca_a: list[float] = []
-    q_ext_f: list[float] = []
-    q_sca_f: list[float] = []
-    err_ext: list[float] = []
-    err_sca: list[float] = []
-    for point in _iter_points(results):
-        ka.append(float(point["ka"]))
-        q_ext_a.append(float(point["q_ext_analytic"]))
-        q_sca_a.append(float(point["q_sca_analytic"]))
-        q_ext_f.append(float(point["q_ext_fem"]))
-        q_sca_f.append(float(point["q_sca_fem"]))
-        err_ext.append(float(point["rel_err_q_ext"]))
-        err_sca.append(float(point["rel_err_q_sca"]))
-    return {
-        "ka": np.asarray(ka, dtype=float),
-        "q_ext_analytic": np.asarray(q_ext_a, dtype=float),
-        "q_sca_analytic": np.asarray(q_sca_a, dtype=float),
-        "q_ext_fem": np.asarray(q_ext_f, dtype=float),
-        "q_sca_fem": np.asarray(q_sca_f, dtype=float),
-        "rel_err_q_ext": np.asarray(err_ext, dtype=float),
-        "rel_err_q_sca": np.asarray(err_sca, dtype=float),
-    }
+    return _column_arrays(
+        results,
+        (
+            "ka",
+            "q_ext_analytic",
+            "q_sca_analytic",
+            "q_ext_fem",
+            "q_sca_fem",
+            "rel_err_q_ext",
+            "rel_err_q_sca",
+        ),
+    )
 
 
 def _draw_efficiency(

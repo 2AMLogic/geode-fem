@@ -12,6 +12,8 @@ The helpers are intentionally narrow:
 - :func:`iter_points` — yield ``point_<N>`` tables from a benchmark
   TOML in N order. Used by sweep-style benchmarks
   (spiral_inductor / mie_sphere).
+- :func:`column_arrays` — collect named float columns across the sweep
+  points as ``np.ndarray`` (one pass over :func:`iter_points`).
 - :func:`subtitle_from_notes` — compact one-line subtitle pulled from
   ``meta.notes[0]`` (truncated, sentence-tidy) so the figure
   self-documents its caveats.
@@ -26,7 +28,9 @@ modules importing it pick up only what they need.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
+
+import numpy as np
 
 from geode_viz.paths import artifacts_dir
 
@@ -62,6 +66,14 @@ def iter_points(results: dict[str, Any]) -> Iterable[dict[str, Any]]:
             indexed.append((idx, val))
     indexed.sort(key=lambda kv: kv[0])
     return (val for _, val in indexed)
+
+
+def column_arrays(
+    results: dict[str, Any], keys: Sequence[str]
+) -> dict[str, np.ndarray]:
+    """Return one float ``ndarray`` per ``key`` across the sweep points."""
+    pts = list(iter_points(results))
+    return {k: np.asarray([float(p[k]) for p in pts], dtype=float) for k in keys}
 
 
 def subtitle_from_notes(
@@ -139,4 +151,4 @@ def resolve_out(
     return artifacts_dir(benchmark) / default_name
 
 
-__all__ = ["iter_points", "subtitle_from_notes", "resolve_out"]
+__all__ = ["iter_points", "column_arrays", "subtitle_from_notes", "resolve_out"]
