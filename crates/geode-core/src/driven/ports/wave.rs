@@ -1033,12 +1033,17 @@ pub fn solve_wave_port_sweep_with_mode<B: burn::tensor::backend::Backend>(
 }
 
 /// Dense Gauss-Jordan inversion of a row-major `n × n` complex matrix.
-/// Returns `None` on an exactly singular pivot. The matrices this serves
-/// are tiny — channel counts (N = Σ_p K_p) for the port solvers here,
-/// port counts (n = number of ports) for [`crate::driven::extraction`],
-/// single digits to low tens in practice — so a dense elimination is
-/// the right tool.
-pub(crate) fn invert_complex_dense(m: &[c64], n: usize) -> Option<Vec<c64>> {
+/// Returns `None` on a numerically singular pivot: a pivot that is NaN or
+/// no larger than `1e-14 · max|m|` relative to the largest entry of the
+/// input. The relative rule (kept from the geode-cli copy this replaced,
+/// issue #1791) makes near-singular port impedance matrices report `None`
+/// instead of an inverse full of round-off garbage. The matrices this
+/// serves are tiny — channel counts (N = Σ_p K_p) for the port solvers
+/// here, port counts (n = number of ports) for
+/// [`crate::driven::extraction`] and the geode-cli S→Y and Touchstone
+/// renormalisation paths — single digits to low tens in practice — so a
+/// dense elimination is the right tool.
+pub fn invert_complex_dense(m: &[c64], n: usize) -> Option<Vec<c64>> {
     debug_assert_eq!(m.len(), n * n);
     let mut a = m.to_vec();
     let mut inv: Vec<c64> = (0..n * n)
@@ -1050,6 +1055,7 @@ pub(crate) fn invert_complex_dense(m: &[c64], n: usize) -> Option<Vec<c64>> {
             }
         })
         .collect();
+    let scale = m.iter().map(|z| z.norm()).fold(0.0, f64::max);
     for col in 0..n {
         // Partial pivot on the largest |a[r][col]|, r ≥ col.
         let mut piv = col;
@@ -1061,7 +1067,9 @@ pub(crate) fn invert_complex_dense(m: &[c64], n: usize) -> Option<Vec<c64>> {
                 piv_norm = v;
             }
         }
-        if piv_norm == 0.0 || piv_norm.is_nan() {
+        // NaN pivots and pivots that vanish relative to the input scale
+        // are both singular.
+        if piv_norm.is_nan() || piv_norm <= 1e-14 * scale {
             return None;
         }
         if piv != col {

@@ -89,7 +89,7 @@ use std::path::Path;
 
 use faer::c64;
 use geode_core::constants::ETA_0_OHM;
-use geode_core::driven::ports::PortMedium;
+use geode_core::driven::ports::{PortMedium, invert_complex_dense};
 
 use crate::error::CliError;
 use crate::export::file_ref_at;
@@ -910,7 +910,7 @@ pub fn renormalize(s: &[c64], z: &[Option<(c64, c64)>], reference_ohm: &[f64]) -
             d - gamma[i] * s[k]
         })
         .collect();
-    m = crate::driven::invert(&m, n)?;
+    m = invert_complex_dense(&m, n)?;
     let mut out = vec![c64::new(0.0, 0.0); n * n];
     for i in 0..n {
         for j in 0..n {
