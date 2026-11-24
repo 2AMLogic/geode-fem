@@ -117,8 +117,8 @@ use geode_core::driven::extraction::{
 };
 use geode_core::driven::ports::{
     CandidateConfirmation, DegenerateCandidate, LumpedPort, MixedPortSweepPoint, PortFaceError,
-    PortFaceProjection, WavePort, WavePortSweepPoint, solve_mixed_port_sweep_with_mode,
-    solve_wave_port_sweep_with_mode,
+    PortFaceProjection, WavePort, WavePortSweepPoint, invert_complex_dense,
+    solve_mixed_port_sweep_with_mode, solve_wave_port_sweep_with_mode,
 };
 use geode_core::driven::rom::{
     DrivenRom, RomDrive, RomError, RomExcitationPoint, RomScatteringPoint, RomSettings,
@@ -787,7 +787,7 @@ pub fn sweep(
             solved: pt.solved,
             iterations: pt.iters_per_rhs.clone(),
             z_ohm: matrix(&z, n),
-            y_s: invert(&z, n).map(|y| matrix(&y, n)),
+            y_s: invert_complex_dense(&z, n).map(|y| matrix(&y, n)),
             s: matrix(&pt.s.s, n),
             ports,
             sigma_max: None,
@@ -2031,50 +2031,6 @@ fn matrix(m: &[c64], n: usize) -> Vec<Vec<Complex>> {
         .collect()
 }
 
-/// Inverse of a row-major `n × n` complex matrix by Gauss–Jordan with
-/// partial pivoting; `None` if (numerically) singular.
-pub(crate) fn invert(a: &[c64], n: usize) -> Option<Vec<c64>> {
-    let zero = c64::new(0.0, 0.0);
-    let one = c64::new(1.0, 0.0);
-    let mut m = a.to_vec();
-    let mut inv = vec![zero; n * n];
-    for i in 0..n {
-        inv[i * n + i] = one;
-    }
-    let scale = a.iter().map(|z| z.norm()).fold(0.0, f64::max);
-    for col in 0..n {
-        let piv = (col..n)
-            .max_by(|&r1, &r2| m[r1 * n + col].norm().total_cmp(&m[r2 * n + col].norm()))?;
-        if m[piv * n + col].norm() <= 1e-14 * scale {
-            return None;
-        }
-        if piv != col {
-            for c in 0..n {
-                m.swap(piv * n + c, col * n + c);
-                inv.swap(piv * n + c, col * n + c);
-            }
-        }
-        let d = one / m[col * n + col];
-        for c in 0..n {
-            m[col * n + c] *= d;
-            inv[col * n + c] *= d;
-        }
-        for r in 0..n {
-            if r != col {
-                let f = m[r * n + col];
-                if f != zero {
-                    for c in 0..n {
-                        let (mc, ic) = (m[col * n + c], inv[col * n + c]);
-                        m[r * n + c] -= f * mc;
-                        inv[r * n + c] -= f * ic;
-                    }
-                }
-            }
-        }
-    }
-    Some(inv)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2326,7 +2282,7 @@ mod tests {
             c64::new(0.5, 0.0),
             c64::new(3.0, -1.0),
         ];
-        let inv = invert(&a, 2).unwrap();
+        let inv = invert_complex_dense(&a, 2).unwrap();
         for r in 0..2 {
             for c in 0..2 {
                 let mut acc = c64::new(0.0, 0.0);
@@ -2337,7 +2293,17 @@ mod tests {
                 assert!((acc - c64::new(want, 0.0)).norm() < 1e-12);
             }
         }
-        assert!(invert(&[c64::new(0.0, 0.0)], 1).is_none());
+        // One test per singularity case (issue #1791): exactly singular
+        // (all-zero) and near-singular relative to max|a| — the relative
+        // rule that keeps `y_s: None` for near-singular port Z.
+        assert!(invert_complex_dense(&[c64::new(0.0, 0.0)], 1).is_none());
+        let near_singular = [
+            c64::new(1.0, 0.0),
+            c64::new(0.0, 0.0),
+            c64::new(0.0, 0.0),
+            c64::new(1e-15, 0.0),
+        ];
+        assert!(invert_complex_dense(&near_singular, 2).is_none());
     }
 
     /// A shell whose inner wall is the box `[-10, 10]³`.
