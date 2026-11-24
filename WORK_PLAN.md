@@ -4,12 +4,12 @@ Roadmap generated from the current GitHub label state by the Loom Guide role.
 Everything between the markers below is regenerated; do not edit it by hand.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-24T01:50:00Z (snapshot; compare against live labels)_
+_Generated: 2026-11-24T12:30:00Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
 
-_None._
+- **#1392**: chore: remove closed flex_precision_spike example and flex feature
 
 ## Very Important
 
@@ -38,8 +38,6 @@ Human-approved issues (`loom:issue`) ready for implementation — excluding held
 Issues currently being built (`loom:building`).
 
 - **#1416**: Prune superseded papers version snapshots (~440 MB tracked)
-- **#1791**: Consolidate duplicated complex dense inverse: geode-cli invert duplicates geode-core invert_complex_dense
-- **#1797**: Delegate driven_material_adjoint_gradient to driven_material_adjoint_gradient_ports (~215 LOC)
 
 ## PRs Awaiting Review
 
@@ -50,8 +48,6 @@ PRs waiting on Judge (`loom:review-requested`).
 - **#1395**: test: share onnx/tfjava sphere-PEC harness body in common module *(held)*
 - **#1489**: docs(papers): add GEODE-vs-Palace measured-performance section (transmon-benchmark.26) *(held)*
 - **#1648**: docs: cover every feature merged since v0.9.0 in CHANGELOG [Unreleased] *(held)*
-- **#1798**: refactor(core): delegate driven_material_adjoint_gradient to ports entry point
-- **#1799**: refactor: consolidate the duplicated dense complex inverse into geode-core
 
 ## Approved (Awaiting Merge)
 
@@ -101,12 +97,12 @@ Issues carrying `loom:curated`.
 
 | Bucket | Count |
 |------|-------|
-| Operator merge-risk holds | 0 |
+| Operator merge-risk holds | 1 |
 | Very important | 1 |
 | Important | 0 |
 | Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
-| In Progress (`loom:building`) | 3 |
-| PRs awaiting review | 7 |
+| In Progress (`loom:building`) | 1 |
+| PRs awaiting review | 5 |
 | Approved PRs awaiting merge | 1 |
 | Curated | 18 |
 | Architect / Hermit proposals | 3 |

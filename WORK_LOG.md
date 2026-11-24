@@ -5,6 +5,12 @@ Maintained automatically by the Loom Guide role; entries are appended, never edi
 
 ### 2026-11-24
 
+- **PR #1802**: refactor(viz): reuse shared iter_points/resolve_out in s_params
+- **PR #1799**: refactor: consolidate the duplicated dense complex inverse into geode-core
+- **PR #1798**: refactor(core): delegate driven_material_adjoint_gradient to ports entry point
+- **Issue #1801** (closed): Remove duplicated _iter_points/_resolve_out from viz s_params.py
+- **Issue #1797** (closed): Delegate driven_material_adjoint_gradient to driven_material_adjoint_gradient_ports (~215 LOC)
+- **Issue #1791** (closed): Consolidate duplicated complex dense inverse: geode-cli invert duplicates geode-core invert_complex_dense
 - **PR #1796**: refactor(viz): share column_arrays helper across motor, mie, spiral plots
 - **Issue #1795** (closed): Simplify viz plots: collapse three _sweep_arrays loops into one column_arrays helper
 
