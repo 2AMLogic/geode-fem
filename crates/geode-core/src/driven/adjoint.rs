@@ -93,8 +93,10 @@
 //! impedance walls — with the same contraction: none of those terms carries
 //! ε, so only the forward operator changes. Paired with
 //! [`crate::driven::extraction::s11_sq_objective`] it gives `∂|S₁₁|²/∂ε`.
-//! [`driven_material_adjoint_gradient_complex`] is its port-less, wall-less
-//! special case.
+//! Both port-less, wall-less entry points — the complex-ε
+//! [`driven_material_adjoint_gradient_complex`] and the lossless real-ε
+//! [`driven_material_adjoint_gradient`] — delegate to it with
+//! `ports = surfaces = &[]`.
 
 use burn::tensor::backend::Backend;
 use faer::linalg::solvers::Solve;
@@ -176,6 +178,10 @@ pub struct DrivenComplexAdjointGradient {
 /// — **one forward solve + one adjoint solve**, reusing a single complex
 /// sparse LU factorization.
 ///
+/// The port-less, wall-less special case of
+/// [`driven_material_adjoint_gradient_ports`] with a zero-loss complex ε,
+/// delegated so the real-eps pipeline cannot drift from the ports one.
+///
 /// # Arguments
 ///
 /// * `mesh` — tetrahedral mesh.
@@ -224,10 +230,8 @@ where
     G: Fn(&[c64]) -> (f64, Vec<c64>),
 {
     let n_tets = mesh.n_tets();
-    let edges = mesh.edges();
-    let n_edges = edges.len();
-
-    // --- Input validation (mirrors driven_solve + the region bookkeeping) ---
+    let n_edges = mesh.edges().len();
+    // Same validation order as before the port-loaded generalization (#739).
     if bcs.pec_interior_mask.len() != n_edges {
         return Err(DrivenError::MaskDimMismatch {
             got: bcs.pec_interior_mask.len(),
@@ -240,230 +244,31 @@ where
             want: n_tets,
         });
     }
-    if source.j_tet.len() != n_tets {
-        return Err(DrivenError::SourceDimMismatch {
-            got: source.j_tet.len(),
-            want: n_tets,
-        });
-    }
-    if region_of_tet.len() != n_tets {
-        return Err(DrivenError::MaterialDimMismatch {
-            got: region_of_tet.len(),
-            want: n_tets,
-        });
-    }
-    if let Some(&bad) = region_of_tet.iter().find(|&&r| r >= n_regions) {
-        return Err(DrivenError::MaterialDimMismatch {
-            got: bad,
-            want: n_regions,
-        });
-    }
-
-    // --- Edge tables and the sparsity scatter map (issue #218 pattern) ------
-    let (tet_idx, tet_sign) = mesh.tet_edge_tables();
-    let scatter = NedelecScatterMap::new(&tet_idx);
-    let pattern = scatter.pattern();
-
-    let (nodes_t, tets_t) = upload_mesh::<B>(mesh, device);
-
-    // --- Assemble K and M(ε) on the Burn backend (real ε_r, lossless). ------
+    // The port-less, impedance-wall-less special case of the port-loaded
+    // adjoint: with no ports and no walls it assembles, factors and
+    // contracts exactly the volume-current pencil `K − ω² M(ε)`. Lifting the
+    // real ε_r to a zero-loss complex ε keeps this entry point from drifting
+    // from the ports implementation.
     let eps_complex: Vec<c64> = eps_r.iter().map(|&e| c64::new(e, 0.0)).collect();
-    let sys = assemble_global_nedelec_with_complex_epsilon_sparse(
-        nodes_t.clone(),
-        tets_t.clone(),
-        &tet_sign,
-        &scatter,
+    let g = driven_material_adjoint_gradient_ports::<B, G>(
+        mesh,
         &eps_complex,
-    );
-    let k_re_host: Vec<f64> = sys.k_vals.into_data().iter::<f64>().collect();
-    let m_re_host: Vec<f64> = sys.m_re_vals.into_data().iter::<f64>().collect();
-    let m_im_host: Vec<f64> = sys.m_im_vals.into_data().iter::<f64>().collect();
-
-    // --- Current-source RHS moments ∫ N · J dV (ε-independent). --------------
-    let j_re: Vec<[f64; 3]> = source
-        .j_tet
-        .iter()
-        .map(|j| [j[0].re, j[1].re, j[2].re])
-        .collect();
-    let j_im: Vec<[f64; 3]> = source
-        .j_tet
-        .iter()
-        .map(|j| [j[0].im, j[1].im, j[2].im])
-        .collect();
-    let rhs_re_t = assemble_nedelec_current_rhs(
-        nodes_t.clone(),
-        tets_t.clone(),
-        &tet_idx,
-        &tet_sign,
-        n_edges,
-        &j_re,
-    );
-    let rhs_im_t =
-        assemble_nedelec_current_rhs(nodes_t, tets_t, &tet_idx, &tet_sign, n_edges, &j_im);
-    let rhs_re: Vec<f64> = rhs_re_t.into_data().iter::<f64>().collect();
-    let rhs_im: Vec<f64> = rhs_im_t.into_data().iter::<f64>().collect();
-
-    // b = iωμ₀ ∫ N · J dV with μ₀ = 1: iω (re + i·im) = ω(−im + i·re).
-    let b_full: Vec<c64> = rhs_re
-        .iter()
-        .zip(rhs_im.iter())
-        .map(|(&re, &im)| c64::new(-omega * im, omega * re))
-        .collect();
-
-    // --- PEC interior reduction: full edge index → interior index. ----------
-    let mut remap = vec![-1_i64; n_edges];
-    let mut n_interior = 0_usize;
-    for (i, &keep) in bcs.pec_interior_mask.iter().enumerate() {
-        if keep {
-            remap[i] = n_interior as i64;
-            n_interior += 1;
-        }
-    }
-    if n_interior == 0 {
-        return Err(DrivenError::EmptyInterior);
-    }
-
-    // --- Interior A(ω) = K − ω² M by linear combination over the pattern. ---
-    // Record the kept-entry (interior row, interior col, pattern slot) so the
-    // per-region mass action M_k x reuses the identical interior filtering.
-    let omega2 = omega * omega;
-    let mut kept: Vec<(usize, usize, usize)> = Vec::with_capacity(pattern.nnz());
-    let mut triplets: Vec<Triplet<usize, usize, c64>> = Vec::with_capacity(pattern.nnz());
-    for (idx, (&r_u32, &c_u32)) in pattern.rows.iter().zip(pattern.cols.iter()).enumerate() {
-        let (rr, cc) = (remap[r_u32 as usize], remap[c_u32 as usize]);
-        if rr < 0 || cc < 0 {
-            continue;
-        }
-        let (rr, cc) = (rr as usize, cc as usize);
-        let a_val =
-            c64::new(k_re_host[idx], 0.0) - c64::new(m_re_host[idx], m_im_host[idx]) * omega2;
-        triplets.push(Triplet::new(rr, cc, a_val));
-        kept.push((rr, cc, idx));
-    }
-    let a_int =
-        SparseColMat::<usize, c64>::try_new_from_triplets(n_interior, n_interior, &triplets)
-            .map_err(|e| DrivenError::SparseAssembly(format!("{e:?}")))?;
-
-    // --- Factor A(ω) ONCE. Serves both the forward and adjoint solves. ------
-    let lu = a_int
-        .as_ref()
-        .sp_lu()
-        .map_err(|e| DrivenError::Factorization(format!("{e:?}")))?;
-    let n_factorizations = 1;
-
-    // Interior-filtered RHS.
-    let b_int: Vec<c64> = bcs
-        .pec_interior_mask
-        .iter()
-        .zip(b_full.iter())
-        .filter_map(|(&keep, &b)| if keep { Some(b) } else { None })
-        .collect();
-
-    // --- Forward solve: A x = b. --------------------------------------------
-    let mut fwd: Mat<c64> = Mat::from_fn(n_interior, 1, |i, _| b_int[i]);
-    lu.solve_in_place(fwd.as_mut());
-    let x_int: Vec<c64> = (0..n_interior).map(|i| fwd[(i, 0)]).collect();
-
-    // Post-solve residual health check ‖A x − b‖ / ‖b‖.
-    let residual_rel = {
-        let mut ax = vec![c64::new(0.0, 0.0); n_interior];
-        for &(rr, cc, idx) in &kept {
-            let a_val =
-                c64::new(k_re_host[idx], 0.0) - c64::new(m_re_host[idx], m_im_host[idx]) * omega2;
-            ax[rr] += a_val * x_int[cc];
-        }
-        let mut res2 = 0.0_f64;
-        let mut b2 = 0.0_f64;
-        for i in 0..n_interior {
-            let r = ax[i] - b_int[i];
-            res2 += r.re * r.re + r.im * r.im;
-            b2 += b_int[i].re * b_int[i].re + b_int[i].im * b_int[i].im;
-        }
-        if b2 > 0.0 {
-            (res2 / b2).sqrt()
-        } else {
-            res2.sqrt()
-        }
-    };
-
-    // Scatter x to full length for the objective (PEC edges = 0).
-    let mut e_edges = vec![c64::new(0.0, 0.0); n_edges];
-    for (full_idx, &ri) in remap.iter().enumerate() {
-        if ri >= 0 {
-            e_edges[full_idx] = x_int[ri as usize];
-        }
-    }
-
-    // --- Objective and its Wirtinger cotangent ∂g/∂x. -----------------------
-    let (objective_value, dg_dx) = objective(&e_edges);
-    if dg_dx.len() != n_edges {
-        return Err(DrivenError::SparseAssembly(format!(
-            "objective cotangent length {} != edge count {n_edges}",
-            dg_dx.len()
-        )));
-    }
-    let g_x_int: Vec<c64> = bcs
-        .pec_interior_mask
-        .iter()
-        .zip(dg_dx.iter())
-        .filter_map(|(&keep, &g)| if keep { Some(g) } else { None })
-        .collect();
-
-    // --- Adjoint solve: Aᵀ λ = ∂g/∂x, REUSING the forward factorization. ----
-    // A is complex-symmetric (Aᵀ = A), so the transpose solve equals the
-    // forward solve here; it is written as the transpose to keep the general
-    // adjoint pattern explicit (and to fail loudly under a symmetry-breaking
-    // mutation). No refactorization.
-    let mut adj: Mat<c64> = Mat::from_fn(n_interior, 1, |i, _| g_x_int[i]);
-    lu.solve_transpose_in_place(adj.as_mut());
-    let lambda_int: Vec<c64> = (0..n_interior).map(|i| adj[(i, 0)]).collect();
-
-    // --- Gradient: dg/dε_k = 2 ω² Re[ λᵀ M_k x ], with M_k the mass assembled
-    // with ε set to the region-k indicator (exact analytic JVP of the
-    // linear-in-ε mass). Each region's M_k x is a triplet spmv over the same
-    // kept interior entries; the contraction λᵀ (M_k x) is the *bilinear*
-    // (un-conjugated) form. ---
-    let mut grad = vec![0.0_f64; n_regions];
-    for (k, grad_k) in grad.iter_mut().enumerate() {
-        let eps_ind: Vec<c64> = region_of_tet
-            .iter()
-            .map(|&r| {
-                if r == k {
-                    c64::new(1.0, 0.0)
-                } else {
-                    c64::new(0.0, 0.0)
-                }
-            })
-            .collect();
-        // Fresh tensor handles: the Burn `assemble_*` kernels consume their
-        // node/connectivity tensors by value, so re-upload per region.
-        let (nk, tk) = upload_mesh::<B>(mesh, device);
-        let sys_k = assemble_global_nedelec_with_complex_epsilon_sparse(
-            nk, tk, &tet_sign, &scatter, &eps_ind,
-        );
-        let mk_re: Vec<f64> = sys_k.m_re_vals.into_data().iter::<f64>().collect();
-        let mk_im: Vec<f64> = sys_k.m_im_vals.into_data().iter::<f64>().collect();
-
-        // (M_k x)_int via triplet spmv over the kept interior entries.
-        let mut mkx = vec![c64::new(0.0, 0.0); n_interior];
-        for &(rr, cc, idx) in &kept {
-            let mk_val = c64::new(mk_re[idx], mk_im[idx]);
-            mkx[rr] += mk_val * x_int[cc];
-        }
-        // λᵀ (M_k x): bilinear (no conjugation).
-        let mut contrib = c64::new(0.0, 0.0);
-        for i in 0..n_interior {
-            contrib += lambda_int[i] * mkx[i];
-        }
-        *grad_k = 2.0 * omega2 * contrib.re;
-    }
-
+        bcs,
+        omega,
+        source,
+        &[],
+        &[],
+        region_of_tet,
+        n_regions,
+        objective,
+        device,
+    )?;
     Ok(DrivenAdjointGradient {
-        objective: objective_value,
-        grad,
-        e_edges,
-        residual_rel,
-        n_factorizations,
+        objective: g.objective,
+        grad: g.grad_eps_prime,
+        e_edges: g.e_edges,
+        residual_rel: g.residual_rel,
+        n_factorizations: g.n_factorizations,
     })
 }
 
