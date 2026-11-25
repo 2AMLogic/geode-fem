@@ -11,6 +11,8 @@
 //! geode capacitance <spec.json|spec.toml> [-o report.json] [--threads N] [--spice PATH [--spice-ret-pin]]
 //! geode conduction <spec.json|spec.toml> [-o report.json] [--threads N] [--outdir DIR]
 //! geode eqs <spec.json|spec.toml> [-o report.json] [--threads N]
+//! geode thermal <spec.json|spec.toml> [-o report.json] [--threads N]
+//! geode self-heating <spec.json|spec.toml> [-o report.json] [--threads N]
 //! geode inductance <spec.json|spec.toml> [-o report.json] [--threads N]
 //!                   [--spice PATH [--spice-ret-pin] [--spice-positive-k]]
 //! geode optimize <spec.json|spec.toml> [-o report.json] [--outdir DIR] [--resume CHECKPOINT]
@@ -59,6 +61,7 @@ mod schema;
 mod sensitivity;
 mod spec;
 mod spice;
+mod thermal;
 mod touchstone;
 
 /// The integration tests' Gmsh writer, for the in-process tests (#952).
@@ -129,6 +132,21 @@ enum Command {
     /// the rest at 0 V. Needs a spec with a `conduction` section and no
     /// ports or frequencies.
     Conduction(ConductionArgs),
+    /// Steady heat conduction `div(k grad T) = -q` (P1, per-region
+    /// `thermal.regions[].conductivity_w_m_k` / `source_w_m3`) with
+    /// fixed-temperature surfaces and adiabatic elsewhere. Reports nodal
+    /// temperatures (K), the generated power and the heat leaving through
+    /// the fixed surfaces (W). Needs a spec with a `thermal` section and no
+    /// `materials`, ports or frequencies.
+    Thermal(StaticArgs),
+    /// Electro-thermal Joule self-heating: a relaxed Picard iteration
+    /// between the DC conduction solve and the steady heat solve with
+    /// `sigma(T) = sigma_ref / (1 + alpha (T - T_ref))`. The report's
+    /// `termination` is `converged`, `not_converged` or `runaway`; the exit
+    /// status is 0 for all three. Needs a spec with a `self_heating` section
+    /// and no `materials`, ports or frequencies.
+    #[command(name = "self-heating")]
+    SelfHeating(StaticArgs),
     /// Electro-quasi-static solve (`div(sigma grad phi + d/dt(eps grad phi))
     /// = 0`) between named terminals with optional floating conductors:
     /// either a transient under per-terminal waveforms (step / pulse /
@@ -592,6 +610,20 @@ impl App for Cli {
                 };
                 let result = conduction::run(&a.spec, prov.clone(), outdir.as_deref(), window);
                 finish("conduction", prov, a.output.as_deref(), result)
+            }
+            Command::Thermal(a) => {
+                let threads = a.threads.map(NonZeroUsize::get);
+                let prov = Self::provenance(&a.spec, threads);
+                let _par = threads.map(apply_thread_cap);
+                let result = thermal::run(&a.spec, prov.clone());
+                finish("thermal", prov, a.output.as_deref(), result)
+            }
+            Command::SelfHeating(a) => {
+                let threads = a.threads.map(NonZeroUsize::get);
+                let prov = Self::provenance(&a.spec, threads);
+                let _par = threads.map(apply_thread_cap);
+                let result = thermal::run_self_heating(&a.spec, prov.clone());
+                finish("self-heating", prov, a.output.as_deref(), result)
             }
             Command::Eqs(a) => {
                 let threads = a.threads.map(NonZeroUsize::get);

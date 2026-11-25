@@ -734,6 +734,8 @@ fn bare_spec(mesh_path: PathBuf, length_unit_m: f64, materials: Vec<MaterialSpec
         inductance: None,
         conduction: None,
         eqs: None,
+        thermal: None,
+        self_heating: None,
         sensitivity: None,
         optimize: None,
         element_order: Default::default(),

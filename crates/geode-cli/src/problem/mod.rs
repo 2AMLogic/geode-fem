@@ -538,6 +538,69 @@ pub struct ConductionTarget {
     pub sigma_s_m: Vec<f64>,
 }
 
+/// A fixed-temperature surface of a thermal / self-heating spec.
+#[derive(Debug, Clone)]
+pub struct FixedTemperature {
+    /// The surface and its distinct nodes (the Dirichlet node set).
+    pub conductor: Conductor,
+    /// Prescribed temperature (K).
+    pub temperature_k: f64,
+}
+
+/// One resolved volume region of a thermal / self-heating spec.
+#[derive(Debug, Clone)]
+pub struct HeatRegion {
+    /// Physical-group name.
+    pub name: String,
+    /// Numeric physical tag.
+    pub tag: i32,
+    /// Number of tets.
+    pub n_tets: usize,
+}
+
+/// A resolved `thermal` section (issue #1804).
+#[derive(Debug, Clone)]
+pub struct ThermalTarget {
+    /// Fixed-temperature surfaces, in spec order.
+    pub fixed: Vec<FixedTemperature>,
+    /// Volume regions, in spec order.
+    pub regions: Vec<HeatRegion>,
+    /// Per-tet thermal conductivity (W/m/K).
+    pub k_w_m_k: Vec<f64>,
+    /// Per-tet volumetric heat source (W/m³).
+    pub q_w_m3: Vec<f64>,
+}
+
+/// Per-tet resistivity law `σ = σ_ref / (1 + α (T − T_ref))`.
+#[derive(Debug, Clone, Copy)]
+pub struct SigmaLaw {
+    /// Conductivity at `t_ref_k` (S/m).
+    pub sigma_ref_s_m: f64,
+    /// Resistivity temperature coefficient (1/K).
+    pub alpha_per_k: f64,
+    /// Reference temperature (K).
+    pub t_ref_k: f64,
+}
+
+/// A resolved `self_heating` section (issue #1804).
+#[derive(Debug, Clone)]
+pub struct SelfHeatingTarget {
+    /// Voltage-driven terminals, in spec order.
+    pub terminals: Vec<Conductor>,
+    /// Terminal voltages (V), parallel to `terminals`.
+    pub voltages_v: Vec<f64>,
+    /// Fixed-temperature surfaces, in spec order.
+    pub fixed: Vec<FixedTemperature>,
+    /// Uniform initial temperature (K).
+    pub t_initial_k: f64,
+    /// Volume regions, in spec order.
+    pub regions: Vec<HeatRegion>,
+    /// Per-tet conductivity law.
+    pub sigma_law: Vec<SigmaLaw>,
+    /// Per-tet thermal conductivity (W/m/K).
+    pub k_w_m_k: Vec<f64>,
+}
+
 /// A named volume region (`materials[]` group) of an `eqs` spec, over which
 /// the mean field is reported (issue #1494).
 #[derive(Debug, Clone)]
@@ -821,6 +884,10 @@ pub struct Problem {
     pub conduction: Option<ConductionTarget>,
     /// The resolved `eqs` section (eqs specs only).
     pub eqs: Option<EqsTarget>,
+    /// The resolved `thermal` section (thermal specs only).
+    pub thermal: Option<ThermalTarget>,
+    /// The resolved `self_heating` section (self-heating specs only).
+    pub self_heating: Option<SelfHeatingTarget>,
     /// The resolved `sensitivity` section, if present (issue #707).
     pub sensitivity: Option<SensitivityTarget>,
     /// The resolved periodic boundary pairs (`boundary_conditions.periodic`;
@@ -1295,6 +1362,9 @@ pub fn p2_support(analysis: Analysis) -> P2Support {
         Analysis::Eqs => P2Support::Unsupported(
             "`eqs` specs have no CLI order-2 path: the EQS solve is scalar P1",
         ),
+        Analysis::Thermal | Analysis::SelfHeating => P2Support::Unsupported(
+            "`thermal` / `self_heating` specs have no CLI order-2 path: the heat solve is scalar P1",
+        ),
         Analysis::Inductance => P2Support::Unsupported(
             "`inductance` specs have no CLI order-2 path: the magnetostatic P2 kernels are not \
              wired to the CLI",
@@ -1536,6 +1606,9 @@ struct GroupTags {
     conduction_terminal: Vec<i32>,
     eqs_terminal: Vec<i32>,
     eqs_floating: Vec<i32>,
+    heat_region: Vec<i32>,
+    heat_fixed: Vec<i32>,
+    heat_terminal: Vec<i32>,
     inductance_path: Vec<[i32; 3]>,
     sensitivity: Vec<Option<i32>>,
 }
@@ -1642,6 +1715,48 @@ fn resolve_group_tags(spec: &ProblemSpec, tagged: &TaggedTetMesh) -> Result<Grou
             ),
             None => (Vec::new(), Vec::new()),
         };
+    let heat_region_names: Vec<&str> = match (&spec.thermal, &spec.self_heating) {
+        (Some(t), _) => t
+            .regions
+            .iter()
+            .map(|r| r.physical_group.as_str())
+            .collect(),
+        (_, Some(h)) => h
+            .regions
+            .iter()
+            .map(|r| r.physical_group.as_str())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let heat_fixed_names: Vec<&str> = match (&spec.thermal, &spec.self_heating) {
+        (Some(t), _) => t
+            .fixed_temperatures
+            .iter()
+            .map(|f| f.surface.as_str())
+            .collect(),
+        (_, Some(h)) => h
+            .fixed_temperatures
+            .iter()
+            .map(|f| f.surface.as_str())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let heat_region_tags: Vec<Option<i32>> = heat_region_names
+        .iter()
+        .map(|n| resolve(3, n, "heat region"))
+        .collect();
+    let heat_fixed_tags: Vec<Option<i32>> = heat_fixed_names
+        .iter()
+        .map(|n| resolve(2, n, "fixed-temperature surface"))
+        .collect();
+    let heat_terminal_tags: Vec<Option<i32>> = match &spec.self_heating {
+        Some(h) => h
+            .terminals
+            .iter()
+            .map(|t| resolve(2, &t.surface, "self-heating terminal"))
+            .collect(),
+        None => Vec::new(),
+    };
     let path_tags: Vec<[Option<i32>; 3]> = match &spec.inductance {
         Some(ind) => ind
             .paths
@@ -1732,6 +1847,9 @@ fn resolve_group_tags(spec: &ProblemSpec, tagged: &TaggedTetMesh) -> Result<Grou
         conduction_terminal: resolved(conduction_tags),
         eqs_terminal: resolved(eqs_terminal_tags),
         eqs_floating: resolved(eqs_floating_tags),
+        heat_region: resolved(heat_region_tags),
+        heat_fixed: resolved(heat_fixed_tags),
+        heat_terminal: resolved(heat_terminal_tags),
         inductance_path: resolved_n(path_tags),
         sensitivity: sensitivity_tags,
     })
@@ -1993,6 +2111,8 @@ pub fn load_parsed(
         ("inductance", spec.inductance.is_some()),
         ("conduction", spec.conduction.is_some()),
         ("eqs", spec.eqs.is_some()),
+        ("thermal", spec.thermal.is_some()),
+        ("self_heating", spec.self_heating.is_some()),
     ]
     .into_iter()
     .filter_map(|(name, present)| present.then_some(name))
@@ -2000,7 +2120,7 @@ pub fn load_parsed(
     if sections.len() > 1 {
         return Err(invalid(format!(
             "a spec describes one analysis: it cannot have more than one of the `eigen` / \
-             `extract` / `capacitance` / `inductance` / `conduction` / `eqs` sections (found `{}`)",
+             `extract` / `capacitance` / `inductance` / `conduction` / `eqs` / `thermal` / `self_heating` sections (found `{}`)",
             sections.join("` and `")
         )));
     }
@@ -2032,6 +2152,7 @@ pub fn load_parsed(
         Analysis::Inductance => validate_inductance(&spec)?,
         Analysis::Conduction => validate_conduction(&spec)?,
         Analysis::Eqs => validate_eqs(&spec)?,
+        Analysis::Thermal | Analysis::SelfHeating => validate_heat(&spec)?,
     }
     validate_sensitivity(&spec, analysis)?;
     validate_sweep(&spec, analysis)?;
@@ -2269,6 +2390,16 @@ pub fn load_parsed(
         None => None,
     };
 
+    // ---- thermal / self-heating regions and surfaces -----------------
+    let thermal = match &spec.thermal {
+        Some(t) => Some(resolve_thermal(t, &tags, &tagged, &surface)?),
+        None => None,
+    };
+    let self_heating = match &spec.self_heating {
+        Some(h) => Some(resolve_self_heating(h, &tags, &tagged, &surface)?),
+        None => None,
+    };
+
     // ---- inductance current paths ------------------------------------
     let inductance = match &spec.inductance {
         Some(ind) => Some(resolve_inductance(
@@ -2365,6 +2496,8 @@ pub fn load_parsed(
         inductance,
         conduction,
         eqs,
+        thermal,
+        self_heating,
         sensitivity,
         periodic,
         bloch,
@@ -2505,6 +2638,8 @@ fn wrong_subcommand(want: Analysis, got: Analysis) -> String {
         Analysis::Inductance => "an inductance spec (it has an `inductance` section)",
         Analysis::Conduction => "a conduction spec (it has a `conduction` section)",
         Analysis::Eqs => "an eqs spec (it has an `eqs` section)",
+        Analysis::Thermal => "a thermal spec (it has a `thermal` section)",
+        Analysis::SelfHeating => "a self-heating spec (it has a `self_heating` section)",
     };
     let fix = match want {
         Analysis::Driven => "drop the analysis section for a plain driven sweep",
@@ -2519,6 +2654,15 @@ fn wrong_subcommand(want: Analysis, got: Analysis) -> String {
         Analysis::Eqs => {
             "`geode eqs` needs an `eqs` section (`terminals` + exactly one of `transient` / \
              `frequencies`), materials with `eps_r` and `conductivity_s_m` and no ports"
+        }
+        Analysis::Thermal => {
+            "`geode thermal` needs a `thermal` section (`regions` + `fixed_temperatures`), no \
+             `materials` and no ports / frequencies"
+        }
+        Analysis::SelfHeating => {
+            "`geode self-heating` needs a `self_heating` section (`terminals`, \
+             `fixed_temperatures`, `initial_temperature_k`, `regions`), no `materials` and no \
+             ports / frequencies"
         }
         Analysis::Conduction => {
             "`geode conduction` needs a `conduction` section (`terminals`), materials with \
@@ -2727,6 +2871,9 @@ fn validate_dispersion(
         }
         Analysis::Conduction => {
             Some("the DC conduction solve has no permittivity term and would silently ignore it")
+        }
+        Analysis::Thermal | Analysis::SelfHeating => {
+            Some("the heat solve has no permittivity term and would silently ignore it")
         }
         Analysis::Eqs => Some(
             "the EQS solve takes a constant real `eps_r` (a dispersive eps would need a \
@@ -4052,6 +4199,7 @@ mod conduction;
 mod eqs;
 mod ports;
 mod sensitivity;
+mod thermal;
 
 use capacitance::*;
 use conduction::*;
@@ -4060,5 +4208,6 @@ use ports::*;
 use sensitivity::*;
 #[allow(unused_imports)] // external paths kept valid (issue #1398)
 pub use sensitivity::{is_n_port_sensitivity, parameter_label, shape_groups, shape_name};
+use thermal::*;
 #[cfg(test)]
 mod tests;
