@@ -4,7 +4,7 @@ Roadmap generated from the current GitHub label state by the Loom Guide role.
 Everything between the markers below is regenerated; do not edit it by hand.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-25T08:30:00Z (snapshot; compare against live labels)_
+_Generated: 2026-11-25T11:10:04Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
@@ -38,7 +38,9 @@ Human-approved issues (`loom:issue`) ready for implementation — excluding held
 Issues currently being built (`loom:building`).
 
 - **#1416**: Prune superseded papers version snapshots (~440 MB tracked)
-- **#1804**: Expose steady heat and Joule self-heating solves through the geode CLI
+- **#1807**: Consolidate three duplicated Huygens surface walkers in driven::scattering (~145 LOC)
+- **#1810**: Share p=1 driven forward+adjoint solve pipeline between driven::adjoint and driven::shape (~250 LOC)
+- **#1814**: Validate the optimize report against the committed report schema
 
 ## PRs Awaiting Review
 
@@ -49,6 +51,8 @@ PRs waiting on Judge (`loom:review-requested`).
 - **#1395**: test: share onnx/tfjava sphere-PEC harness body in common module *(held)*
 - **#1489**: docs(papers): add GEODE-vs-Palace measured-performance section (transmon-benchmark.26) *(held)*
 - **#1648**: docs: cover every feature merged since v0.9.0 in CHANGELOG [Unreleased] *(held)*
+- **#1812**: refactor(scattering): share one closed-surface face walker
+- **#1813**: refactor(driven): share p=1 forward+adjoint solve across adjoint and shape
 
 ## Approved (Awaiting Merge)
 
@@ -74,10 +78,12 @@ Issues carrying `loom:curated`.
 - **#1288**: layout v2: gds2palace XML stackup importer and scripts/gds2geode-layout.py (IHP 400 pH inductor) *(curated)* *(held)*
 - **#1299**: mshio: error Display dumps unbounded hex of remaining input *(curated)*
 - **#1340**: adaptive_mesh: support interior lumped-port sheets in geode-core::adapt (adapt_driven) *(curated)* *(held)*
+- **#1416**: Prune superseded papers version snapshots (~440 MB tracked) *(curated)*
 - **#1428**: Meep R2.5/R5 Spot runs on the optimized E4 geometry with harness v3 (split from #1427) *(curated)* *(held)*
 - **#1488**: Honest GEODE-vs-Palace comparison (manuscript section) *(curated)*
 - **#1626**: Bring CHANGELOG [Unreleased] up to date with features merged since v0.9.0 *(curated)*
 - **#1629**: Research note: can Palace model the Design A Floquet cell for the #1581 cross-check? *(curated)* *(held)*
+- **#1814**: Validate the optimize report against the committed report schema *(curated)*
 
 ## Proposed (Architect / Hermit)
 
@@ -102,10 +108,10 @@ Issues carrying `loom:curated`.
 | Very important | 1 |
 | Important | 0 |
 | Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
-| In Progress (`loom:building`) | 2 |
-| PRs awaiting review | 5 |
+| In Progress (`loom:building`) | 4 |
+| PRs awaiting review | 7 |
 | Approved PRs awaiting merge | 1 |
-| Curated | 18 |
+| Curated | 20 |
 | Architect / Hermit proposals | 3 |
 | Active epics | 6 |
 <!-- guide:plan-body:end -->
