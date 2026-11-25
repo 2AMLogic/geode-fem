@@ -17,7 +17,8 @@
 //!   rejected by `geode check` — schema-valid is not spec-valid.
 //! * **Reports**: real reports of every kind `geode` emits without Gmsh
 //!   (`check` on every spec fixture, `driven`, `eigen`, `extract`,
-//!   `capacitance`, `inductance`, `error`) validate against the report
+//!   `capacitance`, `inductance`, `conduction`, `eqs`, `thermal`,
+//!   `self_heating`, `error`) validate against the report
 //!   schema, whose `oneOf` pins `kind` so exactly one branch matches. The
 //!   `mesh` report is validated by `tests/cookbook.rs` (it needs Gmsh).
 
@@ -492,6 +493,98 @@ fn driven_report_validates() {
         ts.to_str().unwrap(),
     ]);
     assert!(v["touchstone_file"].is_object());
+}
+
+/// Write `spec` into `dir` as `<name>.json`; returns its path as a string.
+fn write_spec(dir: &Path, name: &str, spec: &Value) -> String {
+    let path = dir.join(format!("{name}.json"));
+    std::fs::write(&path, serde_json::to_string(spec).unwrap()).unwrap();
+    path.display().to_string()
+}
+
+/// The checked-in two-layer mesh (end surfaces `a`, `b`; volume groups
+/// `layer1`, `layer2`) as an absolute path, so specs can live in scratch.
+fn two_layer_mesh() -> String {
+    manifest_dir()
+        .join("examples/eqs/two_layer.msh")
+        .display()
+        .to_string()
+}
+
+fn two_layer_spec(extra: Value) -> Value {
+    let mut s = json!({
+        "schema_version": 1,
+        "mesh": {"path": two_layer_mesh(), "length_unit_m": 0.001}
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        s[k] = v.clone();
+    }
+    s
+}
+
+#[test]
+fn conduction_and_eqs_reports_validate() {
+    let dir = scratch("conduction-eqs");
+    let spec = two_layer_spec(json!({
+        "materials": [
+            {"physical_group": "layer1", "conductivity_s_m": 5.8e7},
+            {"physical_group": "layer2", "conductivity_s_m": 2.0e7}
+        ],
+        "conduction": {"terminals": ["a", "b"]}
+    }));
+    let v = run_and_validate(&["conduction", &write_spec(&dir, "conduction", &spec)]);
+    assert_eq!(v["kind"], "conduction");
+
+    // The cookbook EQS spec with a short transient and an absolute mesh path.
+    let mut spec = load_doc(&manifest_dir().join("examples/eqs/eqs_two_layer.json"));
+    spec["mesh"]["path"] = json!(two_layer_mesh());
+    spec["eqs"]["transient"] = json!({"n_steps": 5, "t_end": 0.01});
+    let v = run_and_validate(&["eqs", &write_spec(&dir, "eqs", &spec)]);
+    assert_eq!(v["kind"], "eqs");
+}
+
+#[test]
+fn thermal_and_self_heating_reports_validate() {
+    let dir = scratch("thermal");
+    let fixed = json!([
+        {"surface": "a", "temperature_k": 300.0},
+        {"surface": "b", "temperature_k": 300.0}
+    ]);
+    let spec = two_layer_spec(json!({
+        "thermal": {
+            "regions": [
+                {"physical_group": "layer1", "conductivity_w_m_k": 40.0, "source_w_m3": 1.0e9},
+                {"physical_group": "layer2", "conductivity_w_m_k": 40.0, "source_w_m3": 1.0e9}
+            ],
+            "fixed_temperatures": fixed
+        }
+    }));
+    let v = run_and_validate(&["thermal", &write_spec(&dir, "thermal", &spec)]);
+    assert_eq!(v["kind"], "thermal");
+
+    let region = |g: &str| {
+        json!({
+            "physical_group": g,
+            "sigma_ref_s_m": 5.8e7,
+            "alpha_per_k": 4.0e-3,
+            "t_ref_k": 300.0,
+            "conductivity_w_m_k": 400.0
+        })
+    };
+    let spec = two_layer_spec(json!({
+        "self_heating": {
+            "terminals": [
+                {"surface": "a", "voltage_v": 1.0e-2},
+                {"surface": "b", "voltage_v": 0.0}
+            ],
+            "fixed_temperatures": fixed,
+            "initial_temperature_k": 300.0,
+            "regions": [region("layer1"), region("layer2")],
+            "picard": {}
+        }
+    }));
+    let v = run_and_validate(&["self-heating", &write_spec(&dir, "self_heating", &spec)]);
+    assert_eq!(v["kind"], "self_heating");
 }
 
 #[test]
