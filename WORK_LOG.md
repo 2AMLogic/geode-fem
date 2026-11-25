@@ -3,6 +3,11 @@
 Chronological record of merged pull requests and closed issues, newest first.
 Maintained automatically by the Loom Guide role; entries are appended, never edited.
 
+### 2026-11-25
+
+- **PR #1806**: feat(cli): add geode thermal and self-heating subcommands
+- **Issue #1804** (closed): Expose steady heat and Joule self-heating solves through the geode CLI
+
 ### 2026-11-24
 
 - **PR #1802**: refactor(viz): reuse shared iter_points/resolve_out in s_params
