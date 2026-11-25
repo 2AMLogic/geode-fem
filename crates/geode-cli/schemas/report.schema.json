@@ -3695,6 +3695,65 @@
       ],
       "type": "object"
     },
+    "FixedTemperatureSpec": {
+      "additionalProperties": false,
+      "description": "A fixed-temperature (Dirichlet) surface of a `thermal` / `self_heating`\nsection (issue #1804).",
+      "properties": {
+        "surface": {
+          "description": "Dimension-2 physical-group name; every node of its triangles is\nheld at `temperature_k`. Every other boundary is adiabatic.",
+          "type": "string"
+        },
+        "temperature_k": {
+          "description": "Prescribed temperature (K, finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "surface",
+        "temperature_k"
+      ],
+      "type": "object"
+    },
+    "FixedTemperatureSummary": {
+      "description": "One fixed-temperature surface of a `thermal` / `self-heating` solve.",
+      "properties": {
+        "n_nodes": {
+          "description": "Distinct pinned mesh nodes.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_triangles": {
+          "description": "Tagged triangles.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "physical_group": {
+          "description": "Surface physical-group name.",
+          "type": "string"
+        },
+        "tag": {
+          "description": "Numeric physical tag.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "temperature_k": {
+          "description": "Prescribed temperature (K).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "physical_group",
+        "tag",
+        "n_triangles",
+        "n_nodes",
+        "temperature_k"
+      ],
+      "type": "object"
+    },
     "FloquetAngleResult": {
       "description": "All frequencies at one incidence angle (or at the fixed `k_t`).",
       "properties": {
@@ -4324,6 +4383,65 @@
         "name",
         "role",
         "n_elements"
+      ],
+      "type": "object"
+    },
+    "HeatRegionSummary": {
+      "description": "One volume region of a `thermal` / `self-heating` solve (issue #1804).",
+      "properties": {
+        "n_tets": {
+          "description": "Number of tets in the region.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "physical_group": {
+          "description": "Volume physical-group name.",
+          "type": "string"
+        },
+        "tag": {
+          "description": "Numeric physical tag.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "physical_group",
+        "tag",
+        "n_tets"
+      ],
+      "type": "object"
+    },
+    "HeatSolverStats": {
+      "description": "Statistics of a `geode thermal` / `geode self-heating` solve.",
+      "properties": {
+        "inner": {
+          "description": "Always `\"direct_lu\"`.",
+          "type": "string"
+        },
+        "max_rel_residual": {
+          "description": "Relative residual `‖K u − b‖/‖b‖` of the (last) heat solve; `null`\nwhen no heat solve was completed.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "method": {
+          "description": "Always `\"p1_galerkin\"`.",
+          "type": "string"
+        },
+        "wall_time_s": {
+          "description": "Wall time of assembly + solves + post-processing, seconds.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "method",
+        "inner",
+        "max_rel_residual",
+        "wall_time_s"
       ],
       "type": "object"
     },
@@ -6731,6 +6849,55 @@
       ],
       "type": "object"
     },
+    "PicardSpec": {
+      "additionalProperties": false,
+      "description": "Overrides of the Picard loop controls; every omitted field keeps the\ncore default ([`geode_core::assembly::thermal::PicardOptions`]).",
+      "properties": {
+        "max_iter": {
+          "description": "Iteration cap (core default `50`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "relaxation": {
+          "description": "Relaxation `ω ∈ (0, 1]` (core default `1`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "runaway_growth_iters": {
+          "description": "Consecutive growing updates that declare runaway (core default `4`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "t_max_k": {
+          "description": "Temperature ceiling in K; exceeding it declares runaway (core\ndefault `1e5`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tol_k": {
+          "description": "Convergence tolerance on `max|ΔT|` in K (core default `1e-8`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "PortExtraction": {
       "description": "Per-port extraction results of a `geode extract` sweep.",
       "properties": {
@@ -7166,6 +7333,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "self_heating": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SelfHeatingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Electro-thermal (Joule) self-heating settings (additive in v1, issue\n#1804). Its presence makes this a **self-heating spec** (for `geode\nself-heating`)."
+        },
         "sensitivity": {
           "anyOf": [
             {
@@ -7194,6 +7372,17 @@
             }
           ],
           "description": "Frequency-sweep strategy (additive in v1, issue #708). Omitted: the\ndense sweep — one full-order solve per frequency. Driven / extract\nspecs only."
+        },
+        "thermal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThermalSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Steady heat-conduction settings (additive in v1, issue #1804). Its\npresence makes this a **thermal spec** (for `geode thermal`)."
         },
         "wave_ports": {
           "default": [],
@@ -7589,6 +7778,355 @@
         "theta_deg",
         "phi_deg",
         "polarization"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingRegionSpec": {
+      "additionalProperties": false,
+      "description": "One volume region of a `self_heating` spec (issue #1804).\n\nThe electrical conductivity follows\n`σ(T) = sigma_ref_s_m / (1 + alpha_per_k · (T − t_ref_k))` evaluated on\nthe per-tet mean temperature; the thermal conductivity is constant.",
+      "properties": {
+        "alpha_per_k": {
+          "default": 0.0,
+          "description": "Temperature coefficient `α` of the resistivity, 1/K (finite;\ndefault `0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "conductivity_w_m_k": {
+          "description": "Thermal conductivity `k` in W/(m·K) (finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "physical_group": {
+          "description": "Dimension-3 physical-group name.",
+          "type": "string"
+        },
+        "sigma_ref_s_m": {
+          "description": "Electrical conductivity at `t_ref_k`, S/m (finite, `≥ 0`; `0` makes\nthe region insulating).",
+          "format": "double",
+          "type": "number"
+        },
+        "t_ref_k": {
+          "default": 300.0,
+          "description": "Reference temperature `T_ref` of the law, K (finite; default `300`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "physical_group",
+        "sigma_ref_s_m",
+        "alpha_per_k",
+        "t_ref_k",
+        "conductivity_w_m_k"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingReport": {
+      "description": "`geode self-heating` report (`kind = \"self_heating\"`, additive in v1,\nissue #1804).\n\n**Read `termination` first.** The process exits `0` and writes this\nreport with `status: \"ok\"` for all three Picard outcomes; a caller that\ntreats `not_converged` and `runaway` as errors must check\n`termination`. Everything is SI (mesh converted to metres).",
+      "properties": {
+        "backend": {
+          "description": "Compiled-in Burn backend: `ndarray`, `wgpu`, `cuda` or `metal`.",
+          "type": "string"
+        },
+        "boundary_power_w": {
+          "description": "Heat leaving through the fixed-temperature surfaces (W) of the last\nheat solve; `null` without a thermal solution.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "energy_rel_mismatch": {
+          "description": "Energy-balance mismatch of the last heat solve; `null` without a\nthermal solution.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "geode_version": {
+          "description": "`geode-cli` crate version.",
+          "type": "string"
+        },
+        "git_sha": {
+          "description": "Git revision baked in at build time (`<sha>[-dirty]` or `unknown`).",
+          "type": "string"
+        },
+        "has_thermal_solution": {
+          "description": "`true` if at least one full conduction + heat solve finished, so\nthe power / energy / current fields below are populated; `false`\nwhen the first iteration ended before a heat solve (then\n`temperature_k` is only the initial field).",
+          "type": "boolean"
+        },
+        "iterations": {
+          "description": "Picard iterations performed (a runaway detected on the first\niteration may report `0` or `1`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "const": "self_heating",
+          "description": "Always `\"self_heating\"`.",
+          "type": "string"
+        },
+        "mesh": {
+          "$ref": "#/$defs/MeshSummary",
+          "description": "Mesh summary."
+        },
+        "peak_temperature_k": {
+          "description": "Largest nodal temperature (K) of `temperature_k`.",
+          "format": "double",
+          "type": "number"
+        },
+        "regions": {
+          "description": "Volume regions.",
+          "items": {
+            "$ref": "#/$defs/HeatRegionSummary"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "description": "[`REPORT_SCHEMA_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "self_heating": {
+          "$ref": "#/$defs/SelfHeatingSettingsSummary",
+          "description": "The self-heating settings."
+        },
+        "solver": {
+          "$ref": "#/$defs/HeatSolverStats",
+          "description": "Solver statistics."
+        },
+        "source_power_w": {
+          "description": "Joule heat generated `Σ q V` of the last heat solve (W); `null`\nwithout a thermal solution.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "spec_path": {
+          "description": "Spec path as given on the command line.",
+          "type": "string"
+        },
+        "status": {
+          "const": "ok",
+          "description": "Always `\"ok\"` (failures produce an [`ErrorReport`]).",
+          "type": "string"
+        },
+        "temperature_k": {
+          "description": "Last nodal temperature (K), one entry per mesh node in the mesh\nfile's node order. Always present; on `runaway` / `not_converged`\nit is the last finite iterate (the initial temperature field if\nno iteration finished — check `has_thermal_solution`).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "terminal_current_a": {
+          "description": "Current (A) entering the network at each terminal in the last\nconduction solve; `null` without a thermal solution.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "termination": {
+          "description": "How the Picard loop ended: `\"converged\"` (`max|ΔT|` fell below\n`tol_k`; the temperatures are the fixed point), `\"not_converged\"`\n(`max_iter` reached; the temperatures are the last iterate, not a\nfixed point) or `\"runaway\"` (the update grew for\n`runaway_growth_iters` consecutive iterations, or `T` / `σ` / `k`\nbecame non-finite or `T` exceeded `t_max_k`; the temperatures are\nthe last finite iterate and must not be used as a solution).",
+          "type": "string"
+        },
+        "threads": {
+          "description": "`--threads` value, or `null` when not given (library defaults).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "update_history_k": {
+          "description": "`max|ΔT|` (K) of each completed iteration.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "geode_version",
+        "git_sha",
+        "backend",
+        "threads",
+        "spec_path",
+        "kind",
+        "status",
+        "mesh",
+        "regions",
+        "self_heating",
+        "termination",
+        "iterations",
+        "update_history_k",
+        "temperature_k",
+        "has_thermal_solution",
+        "peak_temperature_k",
+        "source_power_w",
+        "boundary_power_w",
+        "energy_rel_mismatch",
+        "terminal_current_a",
+        "solver"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingSettingsSummary": {
+      "description": "Echo of the resolved `self_heating` section (issue #1804).",
+      "properties": {
+        "element": {
+          "description": "Always `\"p1_tet\"`.",
+          "type": "string"
+        },
+        "fixed_temperatures": {
+          "description": "Fixed-temperature surfaces in spec order.",
+          "items": {
+            "$ref": "#/$defs/FixedTemperatureSummary"
+          },
+          "type": "array"
+        },
+        "initial_temperature_k": {
+          "description": "Uniform initial temperature (K).",
+          "format": "double",
+          "type": "number"
+        },
+        "max_iter": {
+          "description": "Iteration cap actually used.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_dof": {
+          "description": "Scalar DOFs (= mesh nodes).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "relaxation": {
+          "description": "Picard relaxation `ω` actually used.",
+          "format": "double",
+          "type": "number"
+        },
+        "runaway_growth_iters": {
+          "description": "Consecutive growing updates that declare runaway.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "t_max_k": {
+          "description": "Temperature ceiling (K) that declares runaway.",
+          "format": "double",
+          "type": "number"
+        },
+        "terminals": {
+          "description": "Voltage-driven terminals in spec order.",
+          "items": {
+            "$ref": "#/$defs/ConductorSummary"
+          },
+          "type": "array"
+        },
+        "tol_k": {
+          "description": "Picard tolerance on `max|ΔT|` (K) actually used.",
+          "format": "double",
+          "type": "number"
+        },
+        "voltages_v": {
+          "description": "Terminal voltages (V), parallel to `terminals`.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "terminals",
+        "voltages_v",
+        "fixed_temperatures",
+        "initial_temperature_k",
+        "relaxation",
+        "tol_k",
+        "max_iter",
+        "runaway_growth_iters",
+        "t_max_k",
+        "element",
+        "n_dof"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingSpec": {
+      "additionalProperties": false,
+      "description": "Electro-thermal self-heating (`geode self-heating`, issue #1804).\n\nCouples the DC conduction solve (Joule heat `σ|∇φ|²`) with the steady\nheat solve through the core's relaxed Picard iteration\n([`geode_core::assembly::thermal::solve_self_heating`]). `materials`\nmust be empty; every volume region must be listed in `regions`.",
+      "properties": {
+        "fixed_temperatures": {
+          "description": "Fixed-temperature surfaces (`≥ 1`, distinct).",
+          "items": {
+            "$ref": "#/$defs/FixedTemperatureSpec"
+          },
+          "type": "array"
+        },
+        "initial_temperature_k": {
+          "description": "Uniform initial temperature (K, finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "picard": {
+          "$ref": "#/$defs/PicardSpec",
+          "default": {},
+          "description": "Picard loop overrides (default: the core defaults)."
+        },
+        "regions": {
+          "description": "Volume regions with their material laws (cover every tet).",
+          "items": {
+            "$ref": "#/$defs/SelfHeatingRegionSpec"
+          },
+          "type": "array"
+        },
+        "terminals": {
+          "description": "Voltage-driven terminal surfaces (`≥ 1`, distinct). A terminal may\nalso appear in `fixed_temperatures`.",
+          "items": {
+            "$ref": "#/$defs/SelfHeatingTerminalSpec"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "terminals",
+        "fixed_temperatures",
+        "initial_temperature_k",
+        "regions",
+        "picard"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingTerminalSpec": {
+      "additionalProperties": false,
+      "description": "A voltage-driven terminal of a `self_heating` spec (issue #1804).",
+      "properties": {
+        "surface": {
+          "description": "Dimension-2 physical-group name; its nodes are held at `voltage_v`.",
+          "type": "string"
+        },
+        "voltage_v": {
+          "description": "Terminal voltage (V, finite).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "surface",
+        "voltage_v"
       ],
       "type": "object"
     },
@@ -8475,6 +9013,213 @@
         }
       ]
     },
+    "ThermalRegionSpec": {
+      "additionalProperties": false,
+      "description": "One volume region of a `thermal` spec (issue #1804).",
+      "properties": {
+        "conductivity_w_m_k": {
+          "description": "Thermal conductivity `k` in W/(m·K) (finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "physical_group": {
+          "description": "Dimension-3 physical-group name.",
+          "type": "string"
+        },
+        "source_w_m3": {
+          "default": 0.0,
+          "description": "Volumetric heat source `q` in W/m³ (finite; default `0`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "physical_group",
+        "conductivity_w_m_k",
+        "source_w_m3"
+      ],
+      "type": "object"
+    },
+    "ThermalReport": {
+      "description": "`geode thermal` report (`kind = \"thermal\"`, additive in v1, issue\n#1804).\n\nEverything is SI: the mesh coordinates are converted to metres with\n`mesh.length_unit_m` before the solve.",
+      "properties": {
+        "backend": {
+          "description": "Compiled-in Burn backend: `ndarray`, `wgpu`, `cuda` or `metal`.",
+          "type": "string"
+        },
+        "boundary_power_w": {
+          "description": "Heat leaving the mesh through the fixed-temperature surfaces (W,\noutward positive), from the nodal reactions.",
+          "format": "double",
+          "type": "number"
+        },
+        "energy_rel_mismatch": {
+          "description": "`|boundary_power_w − source_power_w| / |source_power_w|`\n(`|difference|` over the smallest positive float when the source\nis zero).",
+          "format": "double",
+          "type": "number"
+        },
+        "geode_version": {
+          "description": "`geode-cli` crate version.",
+          "type": "string"
+        },
+        "git_sha": {
+          "description": "Git revision baked in at build time (`<sha>[-dirty]` or `unknown`).",
+          "type": "string"
+        },
+        "kind": {
+          "const": "thermal",
+          "description": "Always `\"thermal\"`.",
+          "type": "string"
+        },
+        "max_temperature_k": {
+          "description": "Largest nodal temperature (K).",
+          "format": "double",
+          "type": "number"
+        },
+        "mesh": {
+          "$ref": "#/$defs/MeshSummary",
+          "description": "Mesh summary."
+        },
+        "min_temperature_k": {
+          "description": "Smallest nodal temperature (K).",
+          "format": "double",
+          "type": "number"
+        },
+        "regions": {
+          "description": "Volume regions.",
+          "items": {
+            "$ref": "#/$defs/HeatRegionSummary"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "description": "[`REPORT_SCHEMA_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "solver": {
+          "$ref": "#/$defs/HeatSolverStats",
+          "description": "Solver statistics."
+        },
+        "source_power_w": {
+          "description": "Total heat generated in the mesh `Σ q V` (W).",
+          "format": "double",
+          "type": "number"
+        },
+        "spec_path": {
+          "description": "Spec path as given on the command line.",
+          "type": "string"
+        },
+        "status": {
+          "const": "ok",
+          "description": "Always `\"ok\"` (failures produce an [`ErrorReport`]).",
+          "type": "string"
+        },
+        "temperature_k": {
+          "description": "Nodal temperature (K), one entry per mesh node in the mesh file's\nnode order (`temperature_k[i]` is the node with 0-based index `i`,\ni.e. MSH node tag order as read).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "thermal": {
+          "$ref": "#/$defs/ThermalSettingsSummary",
+          "description": "The thermal settings and system size."
+        },
+        "threads": {
+          "description": "`--threads` value, or `null` when not given (library defaults).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "geode_version",
+        "git_sha",
+        "backend",
+        "threads",
+        "spec_path",
+        "kind",
+        "status",
+        "mesh",
+        "regions",
+        "thermal",
+        "temperature_k",
+        "min_temperature_k",
+        "max_temperature_k",
+        "source_power_w",
+        "boundary_power_w",
+        "energy_rel_mismatch",
+        "solver"
+      ],
+      "type": "object"
+    },
+    "ThermalSettingsSummary": {
+      "description": "Echo of the resolved `thermal` section and the scalar system size\n(issue #1804).",
+      "properties": {
+        "element": {
+          "description": "Always `\"p1_tet\"`.",
+          "type": "string"
+        },
+        "fixed_temperatures": {
+          "description": "Fixed-temperature surfaces in spec order.",
+          "items": {
+            "$ref": "#/$defs/FixedTemperatureSummary"
+          },
+          "type": "array"
+        },
+        "n_dof": {
+          "description": "Scalar DOFs before Dirichlet elimination (= mesh nodes).",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "n_free_dof": {
+          "description": "Free DOFs after pinning the fixed-temperature nodes.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "fixed_temperatures",
+        "element",
+        "n_dof",
+        "n_free_dof"
+      ],
+      "type": "object"
+    },
+    "ThermalSpec": {
+      "additionalProperties": false,
+      "description": "Steady heat conduction (`geode thermal`, issue #1804).\n\nSolves `∇·(k∇T) = −q` (P1 on the tets) with per-region `k` and `q`,\nfixed-temperature surfaces and adiabatic elsewhere\n([`geode_core::assembly::thermal::solve_thermal`]). Every volume region\nof the mesh must be listed in `regions`; `materials` must be empty.",
+      "properties": {
+        "fixed_temperatures": {
+          "description": "Fixed-temperature surfaces (`≥ 1`, distinct).",
+          "items": {
+            "$ref": "#/$defs/FixedTemperatureSpec"
+          },
+          "type": "array"
+        },
+        "regions": {
+          "description": "Volume regions with their conductivity and source (cover every tet).",
+          "items": {
+            "$ref": "#/$defs/ThermalRegionSpec"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "regions",
+        "fixed_temperatures"
+      ],
+      "type": "object"
+    },
     "UpmlSpec": {
       "additionalProperties": false,
       "description": "A matched (full Sacks) box-UPML absorbing shell on one volume physical\ngroup.\n\nThe shell's **inner wall** (the air box) is derived from the mesh: the\nbounding box of every mesh node, shrunk inward by `thickness` on every\nface. Each tet of the group whose centroid lies outside that box gets\nthe complex coordinate stretch `s_i = 1 − j·sigma_0·(d_i/thickness)²/k₀`\nper axis (`d_i` = depth beyond the inner wall on axis `i`), applied as\nthe constitutive tensors `ε = ε_r·Λ`, `ν = Λ⁻¹` on top of the group's\n`materials` permittivity (vacuum if unlisted). The mesh must therefore\nbe an **axis-aligned box** whose outer shell of depth `thickness` is\nthe absorbing region; terminate it with a PEC outer wall.",
@@ -9122,7 +9867,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Output of every `geode` subcommand except `schema`: exactly one JSON document, one of eleven kinds discriminated by the top-level `kind` (`check`, `driven`, `eigen`, `extract`, `capacitance`, `inductance`, `conduction`, `eqs`, `optimize`, `mesh`, `error`). Each branch pins `kind` and `status` with `const`, so exactly one branch matches. Report objects are open (no `additionalProperties: false`): fields added within report schema v1 are additive, and consumers should ignore fields they do not know.",
+  "description": "Output of every `geode` subcommand except `schema`: exactly one JSON document, one of thirteen kinds discriminated by the top-level `kind` (`check`, `driven`, `eigen`, `extract`, `capacitance`, `inductance`, `conduction`, `eqs`, `thermal`, `self_heating`, `optimize`, `mesh`, `error`). Each branch pins `kind` and `status` with `const`, so exactly one branch matches. Report objects are open (no `additionalProperties: false`): fields added within report schema v1 are additive, and consumers should ignore fields they do not know.",
   "oneOf": [
     {
       "$ref": "#/$defs/CheckReport"
@@ -9147,6 +9892,12 @@
     },
     {
       "$ref": "#/$defs/EqsReport"
+    },
+    {
+      "$ref": "#/$defs/ThermalReport"
+    },
+    {
+      "$ref": "#/$defs/SelfHeatingReport"
     },
     {
       "$ref": "#/$defs/OptimizeReport"

@@ -202,6 +202,8 @@ fn committed_schemas_are_valid_draft_2020_12() {
             "inductance",
             "conduction",
             "eqs",
+            "thermal",
+            "self_heating",
             "optimize",
             "mesh",
             "error"

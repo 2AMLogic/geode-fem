@@ -838,6 +838,26 @@
       ],
       "type": "object"
     },
+    "FixedTemperatureSpec": {
+      "additionalProperties": false,
+      "description": "A fixed-temperature (Dirichlet) surface of a `thermal` / `self_heating`\nsection (issue #1804).",
+      "properties": {
+        "surface": {
+          "description": "Dimension-2 physical-group name; every node of its triangles is\nheld at `temperature_k`. Every other boundary is adiabatic.",
+          "type": "string"
+        },
+        "temperature_k": {
+          "description": "Prescribed temperature (K, finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "surface",
+        "temperature_k"
+      ],
+      "type": "object"
+    },
     "FloquetPortSpec": {
       "additionalProperties": false,
       "description": "One Floquet port: the open cell face and the medium beyond it.",
@@ -1675,6 +1695,55 @@
       ],
       "type": "object"
     },
+    "PicardSpec": {
+      "additionalProperties": false,
+      "description": "Overrides of the Picard loop controls; every omitted field keeps the\ncore default ([`geode_core::assembly::thermal::PicardOptions`]).",
+      "properties": {
+        "max_iter": {
+          "description": "Iteration cap (core default `50`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "relaxation": {
+          "description": "Relaxation `ω ∈ (0, 1]` (core default `1`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "runaway_growth_iters": {
+          "description": "Consecutive growing updates that declare runaway (core default `4`).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "t_max_k": {
+          "description": "Temperature ceiling in K; exceeding it declares runaway (core\ndefault `1e5`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tol_k": {
+          "description": "Convergence tolerance on `max|ΔT|` in K (core default `1e-8`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "PreconditionerSpec": {
       "description": "Preconditioner for `solver.mode = \"iterative\"` (issue #708).",
       "oneOf": [
@@ -1784,6 +1853,108 @@
       },
       "required": [
         "theta_deg"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingRegionSpec": {
+      "additionalProperties": false,
+      "description": "One volume region of a `self_heating` spec (issue #1804).\n\nThe electrical conductivity follows\n`σ(T) = sigma_ref_s_m / (1 + alpha_per_k · (T − t_ref_k))` evaluated on\nthe per-tet mean temperature; the thermal conductivity is constant.",
+      "properties": {
+        "alpha_per_k": {
+          "default": 0.0,
+          "description": "Temperature coefficient `α` of the resistivity, 1/K (finite;\ndefault `0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "conductivity_w_m_k": {
+          "description": "Thermal conductivity `k` in W/(m·K) (finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "physical_group": {
+          "description": "Dimension-3 physical-group name.",
+          "type": "string"
+        },
+        "sigma_ref_s_m": {
+          "description": "Electrical conductivity at `t_ref_k`, S/m (finite, `≥ 0`; `0` makes\nthe region insulating).",
+          "format": "double",
+          "type": "number"
+        },
+        "t_ref_k": {
+          "default": 300.0,
+          "description": "Reference temperature `T_ref` of the law, K (finite; default `300`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "physical_group",
+        "sigma_ref_s_m",
+        "conductivity_w_m_k"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingSpec": {
+      "additionalProperties": false,
+      "description": "Electro-thermal self-heating (`geode self-heating`, issue #1804).\n\nCouples the DC conduction solve (Joule heat `σ|∇φ|²`) with the steady\nheat solve through the core's relaxed Picard iteration\n([`geode_core::assembly::thermal::solve_self_heating`]). `materials`\nmust be empty; every volume region must be listed in `regions`.",
+      "properties": {
+        "fixed_temperatures": {
+          "description": "Fixed-temperature surfaces (`≥ 1`, distinct).",
+          "items": {
+            "$ref": "#/$defs/FixedTemperatureSpec"
+          },
+          "type": "array"
+        },
+        "initial_temperature_k": {
+          "description": "Uniform initial temperature (K, finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "picard": {
+          "$ref": "#/$defs/PicardSpec",
+          "default": {},
+          "description": "Picard loop overrides (default: the core defaults)."
+        },
+        "regions": {
+          "description": "Volume regions with their material laws (cover every tet).",
+          "items": {
+            "$ref": "#/$defs/SelfHeatingRegionSpec"
+          },
+          "type": "array"
+        },
+        "terminals": {
+          "description": "Voltage-driven terminal surfaces (`≥ 1`, distinct). A terminal may\nalso appear in `fixed_temperatures`.",
+          "items": {
+            "$ref": "#/$defs/SelfHeatingTerminalSpec"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "terminals",
+        "fixed_temperatures",
+        "initial_temperature_k",
+        "regions"
+      ],
+      "type": "object"
+    },
+    "SelfHeatingTerminalSpec": {
+      "additionalProperties": false,
+      "description": "A voltage-driven terminal of a `self_heating` spec (issue #1804).",
+      "properties": {
+        "surface": {
+          "description": "Dimension-2 physical-group name; its nodes are held at `voltage_v`.",
+          "type": "string"
+        },
+        "voltage_v": {
+          "description": "Terminal voltage (V, finite).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "surface",
+        "voltage_v"
       ],
       "type": "object"
     },
@@ -2204,6 +2375,57 @@
         }
       ]
     },
+    "ThermalRegionSpec": {
+      "additionalProperties": false,
+      "description": "One volume region of a `thermal` spec (issue #1804).",
+      "properties": {
+        "conductivity_w_m_k": {
+          "description": "Thermal conductivity `k` in W/(m·K) (finite, `> 0`).",
+          "format": "double",
+          "type": "number"
+        },
+        "physical_group": {
+          "description": "Dimension-3 physical-group name.",
+          "type": "string"
+        },
+        "source_w_m3": {
+          "default": 0.0,
+          "description": "Volumetric heat source `q` in W/m³ (finite; default `0`).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "physical_group",
+        "conductivity_w_m_k"
+      ],
+      "type": "object"
+    },
+    "ThermalSpec": {
+      "additionalProperties": false,
+      "description": "Steady heat conduction (`geode thermal`, issue #1804).\n\nSolves `∇·(k∇T) = −q` (P1 on the tets) with per-region `k` and `q`,\nfixed-temperature surfaces and adiabatic elsewhere\n([`geode_core::assembly::thermal::solve_thermal`]). Every volume region\nof the mesh must be listed in `regions`; `materials` must be empty.",
+      "properties": {
+        "fixed_temperatures": {
+          "description": "Fixed-temperature surfaces (`≥ 1`, distinct).",
+          "items": {
+            "$ref": "#/$defs/FixedTemperatureSpec"
+          },
+          "type": "array"
+        },
+        "regions": {
+          "description": "Volume regions with their conductivity and source (cover every tet).",
+          "items": {
+            "$ref": "#/$defs/ThermalRegionSpec"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "regions",
+        "fixed_temperatures"
+      ],
+      "type": "object"
+    },
     "UpmlSpec": {
       "additionalProperties": false,
       "description": "A matched (full Sacks) box-UPML absorbing shell on one volume physical\ngroup.\n\nThe shell's **inner wall** (the air box) is derived from the mesh: the\nbounding box of every mesh node, shrunk inward by `thickness` on every\nface. Each tet of the group whose centroid lies outside that box gets\nthe complex coordinate stretch `s_i = 1 − j·sigma_0·(d_i/thickness)²/k₀`\nper axis (`d_i` = depth beyond the inner wall on axis `i`), applied as\nthe constitutive tensors `ε = ε_r·Λ`, `ν = Λ⁻¹` on top of the group's\n`materials` permittivity (vacuum if unlisted). The mesh must therefore\nbe an **axis-aligned box** whose outer shell of depth `thickness` is\nthe absorbing region; terminate it with a PEC outer wall.",
@@ -2596,6 +2818,17 @@
       "minimum": 0,
       "type": "integer"
     },
+    "self_heating": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SelfHeatingSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Electro-thermal (Joule) self-heating settings (additive in v1, issue\n#1804). Its presence makes this a **self-heating spec** (for `geode\nself-heating`)."
+    },
     "sensitivity": {
       "anyOf": [
         {
@@ -2624,6 +2857,17 @@
         }
       ],
       "description": "Frequency-sweep strategy (additive in v1, issue #708). Omitted: the\ndense sweep — one full-order solve per frequency. Driven / extract\nspecs only."
+    },
+    "thermal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThermalSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Steady heat-conduction settings (additive in v1, issue #1804). Its\npresence makes this a **thermal spec** (for `geode thermal`)."
     },
     "wave_ports": {
       "default": [],

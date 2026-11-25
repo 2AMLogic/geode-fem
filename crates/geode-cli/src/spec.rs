@@ -157,6 +157,15 @@ pub struct ProblemSpec {
     /// `geode eqs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eqs: Option<EqsSpec>,
+    /// Steady heat-conduction settings (additive in v1, issue #1804). Its
+    /// presence makes this a **thermal spec** (for `geode thermal`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermal: Option<ThermalSpec>,
+    /// Electro-thermal (Joule) self-heating settings (additive in v1, issue
+    /// #1804). Its presence makes this a **self-heating spec** (for `geode
+    /// self-heating`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_heating: Option<SelfHeatingSpec>,
     /// Design sensitivities of the analysis's observable (additive in v1,
     /// issues #707 / #739 / #883). Not an analysis section: it rides on a
     /// `capacitance` (two-terminal), `inductance`, lossless `eigen` or
@@ -649,6 +658,10 @@ pub enum Analysis {
     Conduction,
     /// EQS transient / admittance (`geode eqs`).
     Eqs,
+    /// Steady heat conduction (`geode thermal`).
+    Thermal,
+    /// Electro-thermal Joule self-heating (`geode self-heating`).
+    SelfHeating,
 }
 
 impl Analysis {
@@ -662,6 +675,8 @@ impl Analysis {
             Analysis::Inductance => "inductance",
             Analysis::Conduction => "conduction",
             Analysis::Eqs => "eqs",
+            Analysis::Thermal => "thermal",
+            Analysis::SelfHeating => "self-heating",
         }
     }
 }
@@ -684,6 +699,10 @@ impl ProblemSpec {
             Analysis::Conduction
         } else if self.eqs.is_some() {
             Analysis::Eqs
+        } else if self.thermal.is_some() {
+            Analysis::Thermal
+        } else if self.self_heating.is_some() {
+            Analysis::SelfHeating
         } else {
             Analysis::Driven
         }
@@ -838,6 +857,130 @@ pub struct ConductionSpec {
     /// applied voltage through that resistor instead of being pinned.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub r_ext: std::collections::BTreeMap<String, f64>,
+}
+
+/// A fixed-temperature (Dirichlet) surface of a `thermal` / `self_heating`
+/// section (issue #1804).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixedTemperatureSpec {
+    /// Dimension-2 physical-group name; every node of its triangles is
+    /// held at `temperature_k`. Every other boundary is adiabatic.
+    pub surface: String,
+    /// Prescribed temperature (K, finite, `> 0`).
+    pub temperature_k: f64,
+}
+
+/// One volume region of a `thermal` spec (issue #1804).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThermalRegionSpec {
+    /// Dimension-3 physical-group name.
+    pub physical_group: String,
+    /// Thermal conductivity `k` in W/(m·K) (finite, `> 0`).
+    pub conductivity_w_m_k: f64,
+    /// Volumetric heat source `q` in W/m³ (finite; default `0`).
+    #[serde(default)]
+    pub source_w_m3: f64,
+}
+
+/// Steady heat conduction (`geode thermal`, issue #1804).
+///
+/// Solves `∇·(k∇T) = −q` (P1 on the tets) with per-region `k` and `q`,
+/// fixed-temperature surfaces and adiabatic elsewhere
+/// ([`geode_core::assembly::thermal::solve_thermal`]). Every volume region
+/// of the mesh must be listed in `regions`; `materials` must be empty.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ThermalSpec {
+    /// Volume regions with their conductivity and source (cover every tet).
+    pub regions: Vec<ThermalRegionSpec>,
+    /// Fixed-temperature surfaces (`≥ 1`, distinct).
+    pub fixed_temperatures: Vec<FixedTemperatureSpec>,
+}
+
+/// A voltage-driven terminal of a `self_heating` spec (issue #1804).
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelfHeatingTerminalSpec {
+    /// Dimension-2 physical-group name; its nodes are held at `voltage_v`.
+    pub surface: String,
+    /// Terminal voltage (V, finite).
+    pub voltage_v: f64,
+}
+
+/// One volume region of a `self_heating` spec (issue #1804).
+///
+/// The electrical conductivity follows
+/// `σ(T) = sigma_ref_s_m / (1 + alpha_per_k · (T − t_ref_k))` evaluated on
+/// the per-tet mean temperature; the thermal conductivity is constant.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelfHeatingRegionSpec {
+    /// Dimension-3 physical-group name.
+    pub physical_group: String,
+    /// Electrical conductivity at `t_ref_k`, S/m (finite, `≥ 0`; `0` makes
+    /// the region insulating).
+    pub sigma_ref_s_m: f64,
+    /// Temperature coefficient `α` of the resistivity, 1/K (finite;
+    /// default `0`).
+    #[serde(default)]
+    pub alpha_per_k: f64,
+    /// Reference temperature `T_ref` of the law, K (finite; default `300`).
+    #[serde(default = "default_t_ref_k")]
+    pub t_ref_k: f64,
+    /// Thermal conductivity `k` in W/(m·K) (finite, `> 0`).
+    pub conductivity_w_m_k: f64,
+}
+
+fn default_t_ref_k() -> f64 {
+    300.0
+}
+
+/// Overrides of the Picard loop controls; every omitted field keeps the
+/// core default ([`geode_core::assembly::thermal::PicardOptions`]).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PicardSpec {
+    /// Relaxation `ω ∈ (0, 1]` (core default `1`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relaxation: Option<f64>,
+    /// Convergence tolerance on `max|ΔT|` in K (core default `1e-8`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tol_k: Option<f64>,
+    /// Iteration cap (core default `50`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_iter: Option<usize>,
+    /// Consecutive growing updates that declare runaway (core default `4`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runaway_growth_iters: Option<usize>,
+    /// Temperature ceiling in K; exceeding it declares runaway (core
+    /// default `1e5`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t_max_k: Option<f64>,
+}
+
+/// Electro-thermal self-heating (`geode self-heating`, issue #1804).
+///
+/// Couples the DC conduction solve (Joule heat `σ|∇φ|²`) with the steady
+/// heat solve through the core's relaxed Picard iteration
+/// ([`geode_core::assembly::thermal::solve_self_heating`]). `materials`
+/// must be empty; every volume region must be listed in `regions`.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SelfHeatingSpec {
+    /// Voltage-driven terminal surfaces (`≥ 1`, distinct). A terminal may
+    /// also appear in `fixed_temperatures`.
+    pub terminals: Vec<SelfHeatingTerminalSpec>,
+    /// Fixed-temperature surfaces (`≥ 1`, distinct).
+    pub fixed_temperatures: Vec<FixedTemperatureSpec>,
+    /// Uniform initial temperature (K, finite, `> 0`).
+    pub initial_temperature_k: f64,
+    /// Volume regions with their material laws (cover every tet).
+    pub regions: Vec<SelfHeatingRegionSpec>,
+    /// Picard loop overrides (default: the core defaults).
+    #[serde(default)]
+    pub picard: PicardSpec,
 }
 
 /// A terminal drive waveform `V(t)` (volts, `t` in seconds), a pure

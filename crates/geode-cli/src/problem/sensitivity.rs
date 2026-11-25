@@ -35,6 +35,12 @@ pub(super) fn validate_sensitivity(spec: &ProblemSpec, analysis: Analysis) -> Re
                 "`sensitivity` is not supported for an `eqs` spec in schema v1",
             ));
         }
+        Analysis::Thermal | Analysis::SelfHeating => {
+            return Err(invalid(format!(
+                "`sensitivity` is not supported for a `{}` spec in schema v1",
+                analysis.name()
+            )));
+        }
         Analysis::Extract => {
             return Err(invalid(
                 "`sensitivity` is not supported for an `extract` spec in schema v1: there is no \

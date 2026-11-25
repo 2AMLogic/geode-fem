@@ -47,6 +47,8 @@ one worked example per analysis, with the output to expect.
 | `capacitance` | live (#705) — static **Maxwell capacitance matrix** (farads) between named conductor surfaces, from one electrostatic solve per terminal (P1 scalar, direct LU); non-driven conductors are **grounded**, never floating (see [Capacitance](#static-capacitance-geode-capacitance-issue-705)); optional SPICE `.subckt` (#715) |
 | `inductance` | live (#714) — static **Maxwell inductance matrix** (henries) between named open current paths (conductor volume + source / sink faces returning through one connected PEC conductor), from a P1 conduction solve per path for the current density and one tree-cotree-gauged magnetostatic solve per path (Nédélec edges, direct LU); **not** `extract`'s RF `l0_h` (see [Inductance](#static-inductance-geode-inductance-issue-714)); optional SPICE `.subckt` (#719) |
 | `eqs` | live (#1494) — **electro-quasi-static** solve `∇·(σ∇φ + ∂ₜ(ε∇φ)) = 0` between named terminals with optional floating conductors: a θ-method transient under per-terminal step / pulse / piecewise-linear waveforms (conduction and displacement currents, floating potentials, region-mean `E`, delivered energy) or the small-signal admittance `Y = G + jωC` per frequency (see [EQS](#electro-quasi-static-geode-eqs-issue-1494)) |
+| `thermal` | live (#1804) — **steady heat conduction** `∇·(k∇T) = −q` with fixed-temperature surfaces: nodal temperatures, generated power and heat through the fixed surfaces (see [thermal](#steady-heat-and-joule-self-heating-geode-thermal-geode-self-heating-issue-1804)) |
+| `self-heating` | live (#1804) — **Joule self-heating**: Picard iteration of the DC conduction and heat solves with `σ(T) = σ_ref/(1+α(T−T_ref))`; `termination` is `converged` / `not_converged` / `runaway` |
 | `mesh`    | live (#704) — layout (2-D rectilinear polygons + layer stack, JSON/TOML) → tagged Gmsh MSH 4.1 mesh with automatically named physical groups + a starter problem spec (`--analysis driven`, `capacitance`, `inductance` (#720) or `eigen` (periodic Bloch cells, #837)), via the external `gmsh` binary (see [Layout → mesh](#layout--mesh-geode-mesh-issue-704)) |
 | `schema`  | live (#709) — print the JSON Schema (draft 2020-12) of the problem spec, the report or the layout (`geode schema spec\|report\|layout [-o PATH]`), derived from the same serde types the binary parses and emits; committed under [`schemas/`](schemas/) (see [JSON Schema](#json-schema-geode-schema-issue-709)) |
 
@@ -1238,6 +1240,128 @@ and `C` carry the mesh length unit; `E` is in V/m. Not supported:
 `sensitivity`, order 2, dispersive / anisotropic materials, field-dependent
 conductivity. Worked example:
 [`examples/eqs/`](examples/eqs/README.md).
+
+## Steady heat and Joule self-heating (`geode thermal`, `geode self-heating`, issue #1804)
+
+```text
+geode thermal      <spec.json|spec.toml> [-o report.json] [--threads N]
+geode self-heating <spec.json|spec.toml> [-o report.json] [--threads N]
+```
+
+Both wrap `geode_core::assembly::thermal` (P1 tets, direct sparse LU). Each
+takes the usual spec envelope (`schema_version`, `mesh`) plus **one** analysis
+section: `thermal` or `self_heating`. `materials` must be empty (the regions
+are listed in the section), and ports, frequencies, `boundary_conditions` and
+the iterative solver are rejected. **Everything is SI**: mesh coordinates are
+converted to metres with `mesh.length_unit_m` before the solve, so no result
+carries a mesh-unit factor. Every volume region of the mesh must be listed in
+`regions` (an unlisted region is an `invalid_spec` error, never a default
+conductivity). Every boundary that is not a fixed-temperature surface is
+adiabatic. A fixed-temperature surface naming a physical group that is not in
+the mesh fails with the structured `unresolved_groups` error.
+
+### `geode thermal`
+
+Solves `∇·(k∇T) = −q`.
+
+```json
+{
+  "schema_version": 1,
+  "mesh": {"path": "bar.msh", "length_unit_m": 1e-3},
+  "thermal": {
+    "regions": [
+      {"physical_group": "bar", "conductivity_w_m_k": 40.0, "source_w_m3": 4.0e11}
+    ],
+    "fixed_temperatures": [
+      {"surface": "left",  "temperature_k": 300.0},
+      {"surface": "right", "temperature_k": 300.0}
+    ]
+  }
+}
+```
+
+| Input | Unit | Notes |
+|---|---|---|
+| `regions[].conductivity_w_m_k` | W/(m·K) | finite, `> 0` |
+| `regions[].source_w_m3` | W/m³ | finite, default `0` |
+| `fixed_temperatures[].temperature_k` | K | finite, `> 0`; one dimension-2 group each |
+
+Report (`kind = "thermal"`): `temperature_k` (K; one entry per mesh node, in
+the mesh file's node order, `temperature_k[i]` ↔ 0-based node `i`),
+`min_temperature_k`, `max_temperature_k`, `source_power_w` (`Σ q V`, W),
+`boundary_power_w` (heat leaving through the fixed-temperature surfaces, W,
+outward positive) and `energy_rel_mismatch`
+(`|boundary − source| / |source|`). Exit status `0`.
+
+### `geode self-heating`
+
+Couples the DC conduction solve (Joule heat `σ|∇φ|²`) with the heat solve
+through the core's relaxed Picard iteration, with the per-region law
+
+```text
+σ(T) = sigma_ref_s_m / (1 + alpha_per_k · (T − t_ref_k))
+```
+
+evaluated on each tet's mean temperature, and constant `k`.
+
+```json
+{
+  "schema_version": 1,
+  "mesh": {"path": "bar.msh", "length_unit_m": 1e-3},
+  "self_heating": {
+    "terminals": [
+      {"surface": "left",  "voltage_v": 0.01},
+      {"surface": "right", "voltage_v": 0.0}
+    ],
+    "fixed_temperatures": [
+      {"surface": "left",  "temperature_k": 300.0},
+      {"surface": "right", "temperature_k": 300.0}
+    ],
+    "initial_temperature_k": 300.0,
+    "regions": [
+      {"physical_group": "bar", "sigma_ref_s_m": 5.8e7, "alpha_per_k": 4.0e-3,
+       "t_ref_k": 300.0, "conductivity_w_m_k": 400.0}
+    ],
+    "picard": {"max_iter": 50}
+  }
+}
+```
+
+A terminal surface may also be a fixed-temperature surface. `sigma_ref_s_m`
+is `≥ 0` (S/m; `0` makes the region insulating), `alpha_per_k` defaults to
+`0`, `t_ref_k` to `300`. A law whose denominator `1 + α(T − T_ref)` reaches
+`≤ 0` is non-physical and ends the loop as `runaway`. The optional `picard`
+object overrides the core defaults (`relaxation` 1, `tol_k` 1e-8,
+`max_iter` 50, `runaway_growth_iters` 4, `t_max_k` 1e5); the values used are
+echoed in `self_heating`.
+
+Report (`kind = "self_heating"`). **Read `termination` first** — the exit
+status is `0` and `status` is `"ok"` for all three outcomes:
+
+| `termination` | Meaning | `temperature_k` |
+|---|---|---|
+| `converged` | `max|ΔT|` fell below `tol_k` | the fixed point; usable |
+| `not_converged` | `max_iter` reached | last iterate, **not** a fixed point |
+| `runaway` | update grew `runaway_growth_iters` times in a row, or `T` / `σ` / `k` left the finite range, or `T > t_max_k` | last finite iterate, **not** a solution |
+
+A caller that maps the two unsuccessful outcomes to errors (klayout-tools)
+tests `termination != "converged"`; there is no non-zero exit for them
+because the report still carries the last iterate, `iterations` and
+`update_history_k` (`max|ΔT|` per iteration, K) for diagnosis. `temperature_k`
+is always present (one entry per node, mesh node order); when the very first
+iteration ends before a heat solve completes (e.g. runaway on iteration 1),
+`has_thermal_solution` is `false`, `temperature_k` is the initial field and
+`source_power_w`, `boundary_power_w`, `energy_rel_mismatch` and
+`terminal_current_a` are `null`. Otherwise they describe the last completed
+iteration (`terminal_current_a` in A, in terminal order).
+
+Input errors (invalid spec, unresolved group, unlisted region, a singular or
+unconverged linear solve) exit non-zero with the usual `kind = "error"`
+report.
+
+Golden test: `tests/thermal_golden.rs` (uniformly heated bar against
+`T0 + q x(L−x)/(2k)` and the energy balance; converged, iteration-limit and
+runaway self-heating).
 
 ## Static inductance (`geode inductance`, issue #714)
 

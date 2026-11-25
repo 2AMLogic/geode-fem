@@ -2723,3 +2723,192 @@ pub struct ErrorReport {
     /// The error.
     pub error: ErrorBody,
 }
+
+/// One volume region of a `thermal` / `self-heating` solve (issue #1804).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct HeatRegionSummary {
+    /// Volume physical-group name.
+    pub physical_group: String,
+    /// Numeric physical tag.
+    pub tag: i32,
+    /// Number of tets in the region.
+    pub n_tets: usize,
+}
+
+/// One fixed-temperature surface of a `thermal` / `self-heating` solve.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FixedTemperatureSummary {
+    /// Surface physical-group name.
+    pub physical_group: String,
+    /// Numeric physical tag.
+    pub tag: i32,
+    /// Tagged triangles.
+    pub n_triangles: usize,
+    /// Distinct pinned mesh nodes.
+    pub n_nodes: usize,
+    /// Prescribed temperature (K).
+    pub temperature_k: f64,
+}
+
+/// Echo of the resolved `thermal` section and the scalar system size
+/// (issue #1804).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ThermalSettingsSummary {
+    /// Fixed-temperature surfaces in spec order.
+    pub fixed_temperatures: Vec<FixedTemperatureSummary>,
+    /// Always `"p1_tet"`.
+    pub element: &'static str,
+    /// Scalar DOFs before Dirichlet elimination (= mesh nodes).
+    pub n_dof: usize,
+    /// Free DOFs after pinning the fixed-temperature nodes.
+    pub n_free_dof: usize,
+}
+
+/// Statistics of a `geode thermal` / `geode self-heating` solve.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct HeatSolverStats {
+    /// Always `"p1_galerkin"`.
+    pub method: &'static str,
+    /// Always `"direct_lu"`.
+    pub inner: &'static str,
+    /// Relative residual `‖K u − b‖/‖b‖` of the (last) heat solve; `null`
+    /// when no heat solve was completed.
+    pub max_rel_residual: Option<f64>,
+    /// Wall time of assembly + solves + post-processing, seconds.
+    pub wall_time_s: f64,
+}
+
+/// `geode thermal` report (`kind = "thermal"`, additive in v1, issue
+/// #1804).
+///
+/// Everything is SI: the mesh coordinates are converted to metres with
+/// `mesh.length_unit_m` before the solve.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ThermalReport {
+    /// Provenance (flattened).
+    #[serde(flatten)]
+    pub provenance: Provenance,
+    /// Always `"thermal"`.
+    #[schemars(extend("const" = "thermal"))]
+    pub kind: &'static str,
+    /// Always `"ok"` (failures produce an [`ErrorReport`]).
+    #[schemars(extend("const" = "ok"))]
+    pub status: &'static str,
+    /// Mesh summary.
+    pub mesh: MeshSummary,
+    /// Volume regions.
+    pub regions: Vec<HeatRegionSummary>,
+    /// The thermal settings and system size.
+    pub thermal: ThermalSettingsSummary,
+    /// Nodal temperature (K), one entry per mesh node in the mesh file's
+    /// node order (`temperature_k[i]` is the node with 0-based index `i`,
+    /// i.e. MSH node tag order as read).
+    pub temperature_k: Vec<f64>,
+    /// Smallest nodal temperature (K).
+    pub min_temperature_k: f64,
+    /// Largest nodal temperature (K).
+    pub max_temperature_k: f64,
+    /// Total heat generated in the mesh `Σ q V` (W).
+    pub source_power_w: f64,
+    /// Heat leaving the mesh through the fixed-temperature surfaces (W,
+    /// outward positive), from the nodal reactions.
+    pub boundary_power_w: f64,
+    /// `|boundary_power_w − source_power_w| / |source_power_w|`
+    /// (`|difference|` over the smallest positive float when the source
+    /// is zero).
+    pub energy_rel_mismatch: f64,
+    /// Solver statistics.
+    pub solver: HeatSolverStats,
+}
+
+/// Echo of the resolved `self_heating` section (issue #1804).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SelfHeatingSettingsSummary {
+    /// Voltage-driven terminals in spec order.
+    pub terminals: Vec<ConductorSummary>,
+    /// Terminal voltages (V), parallel to `terminals`.
+    pub voltages_v: Vec<f64>,
+    /// Fixed-temperature surfaces in spec order.
+    pub fixed_temperatures: Vec<FixedTemperatureSummary>,
+    /// Uniform initial temperature (K).
+    pub initial_temperature_k: f64,
+    /// Picard relaxation `ω` actually used.
+    pub relaxation: f64,
+    /// Picard tolerance on `max|ΔT|` (K) actually used.
+    pub tol_k: f64,
+    /// Iteration cap actually used.
+    pub max_iter: usize,
+    /// Consecutive growing updates that declare runaway.
+    pub runaway_growth_iters: usize,
+    /// Temperature ceiling (K) that declares runaway.
+    pub t_max_k: f64,
+    /// Always `"p1_tet"`.
+    pub element: &'static str,
+    /// Scalar DOFs (= mesh nodes).
+    pub n_dof: usize,
+}
+
+/// `geode self-heating` report (`kind = "self_heating"`, additive in v1,
+/// issue #1804).
+///
+/// **Read `termination` first.** The process exits `0` and writes this
+/// report with `status: "ok"` for all three Picard outcomes; a caller that
+/// treats `not_converged` and `runaway` as errors must check
+/// `termination`. Everything is SI (mesh converted to metres).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SelfHeatingReport {
+    /// Provenance (flattened).
+    #[serde(flatten)]
+    pub provenance: Provenance,
+    /// Always `"self_heating"`.
+    #[schemars(extend("const" = "self_heating"))]
+    pub kind: &'static str,
+    /// Always `"ok"` (failures produce an [`ErrorReport`]).
+    #[schemars(extend("const" = "ok"))]
+    pub status: &'static str,
+    /// Mesh summary.
+    pub mesh: MeshSummary,
+    /// Volume regions.
+    pub regions: Vec<HeatRegionSummary>,
+    /// The self-heating settings.
+    pub self_heating: SelfHeatingSettingsSummary,
+    /// How the Picard loop ended: `"converged"` (`max|ΔT|` fell below
+    /// `tol_k`; the temperatures are the fixed point), `"not_converged"`
+    /// (`max_iter` reached; the temperatures are the last iterate, not a
+    /// fixed point) or `"runaway"` (the update grew for
+    /// `runaway_growth_iters` consecutive iterations, or `T` / `σ` / `k`
+    /// became non-finite or `T` exceeded `t_max_k`; the temperatures are
+    /// the last finite iterate and must not be used as a solution).
+    pub termination: &'static str,
+    /// Picard iterations performed (a runaway detected on the first
+    /// iteration may report `0` or `1`).
+    pub iterations: usize,
+    /// `max|ΔT|` (K) of each completed iteration.
+    pub update_history_k: Vec<f64>,
+    /// Last nodal temperature (K), one entry per mesh node in the mesh
+    /// file's node order. Always present; on `runaway` / `not_converged`
+    /// it is the last finite iterate (the initial temperature field if
+    /// no iteration finished — check `has_thermal_solution`).
+    pub temperature_k: Vec<f64>,
+    /// `true` if at least one full conduction + heat solve finished, so
+    /// the power / energy / current fields below are populated; `false`
+    /// when the first iteration ended before a heat solve (then
+    /// `temperature_k` is only the initial field).
+    pub has_thermal_solution: bool,
+    /// Largest nodal temperature (K) of `temperature_k`.
+    pub peak_temperature_k: f64,
+    /// Joule heat generated `Σ q V` of the last heat solve (W); `null`
+    /// without a thermal solution.
+    pub source_power_w: Option<f64>,
+    /// Heat leaving through the fixed-temperature surfaces (W) of the last
+    /// heat solve; `null` without a thermal solution.
+    pub boundary_power_w: Option<f64>,
+    /// Energy-balance mismatch of the last heat solve; `null` without a
+    /// thermal solution.
+    pub energy_rel_mismatch: Option<f64>,
+    /// Current (A) entering the network at each terminal in the last
+    /// conduction solve; `null` without a thermal solution.
+    pub terminal_current_a: Option<Vec<f64>>,
+    /// Solver statistics.
+    pub solver: HeatSolverStats,
+}
