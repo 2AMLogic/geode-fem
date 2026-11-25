@@ -4,12 +4,12 @@ Roadmap generated from the current GitHub label state by the Loom Guide role.
 Everything between the markers below is regenerated; do not edit it by hand.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-25T11:10:04Z (snapshot; compare against live labels)_
+_Generated: 2026-11-25T21:43:07Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
 
-- **#1392**: chore: remove closed flex_precision_spike example and flex feature
+_None._
 
 ## Very Important
 
@@ -39,8 +39,6 @@ Issues currently being built (`loom:building`).
 
 - **#1416**: Prune superseded papers version snapshots (~440 MB tracked)
 - **#1807**: Consolidate three duplicated Huygens surface walkers in driven::scattering (~145 LOC)
-- **#1810**: Share p=1 driven forward+adjoint solve pipeline between driven::adjoint and driven::shape (~250 LOC)
-- **#1814**: Validate the optimize report against the committed report schema
 
 ## PRs Awaiting Review
 
@@ -51,14 +49,13 @@ PRs waiting on Judge (`loom:review-requested`).
 - **#1395**: test: share onnx/tfjava sphere-PEC harness body in common module *(held)*
 - **#1489**: docs(papers): add GEODE-vs-Palace measured-performance section (transmon-benchmark.26) *(held)*
 - **#1648**: docs: cover every feature merged since v0.9.0 in CHANGELOG [Unreleased] *(held)*
-- **#1812**: refactor(scattering): share one closed-surface face walker
-- **#1813**: refactor(driven): share p=1 forward+adjoint solve across adjoint and shape
 
 ## Approved (Awaiting Merge)
 
 PRs that passed review and are queued for Champion auto-merge (`loom:pr`).
 
-- **#1392**: chore: remove closed flex_precision_spike example and flex feature
+- **#1812**: refactor(scattering): share one closed-surface face walker
+- **#1817**: chore(deps): Bump xxhash-rust from 0.8.15 to 0.8.21
 
 ## Proposed
 
@@ -83,7 +80,7 @@ Issues carrying `loom:curated`.
 - **#1488**: Honest GEODE-vs-Palace comparison (manuscript section) *(curated)*
 - **#1626**: Bring CHANGELOG [Unreleased] up to date with features merged since v0.9.0 *(curated)*
 - **#1629**: Research note: can Palace model the Design A Floquet cell for the #1581 cross-check? *(curated)* *(held)*
-- **#1814**: Validate the optimize report against the committed report schema *(curated)*
+- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example *(curated)* *(held)*
 
 ## Proposed (Architect / Hermit)
 
@@ -104,13 +101,13 @@ Issues carrying `loom:curated`.
 
 | Bucket | Count |
 |------|-------|
-| Operator merge-risk holds | 1 |
+| Operator merge-risk holds | 0 |
 | Very important | 1 |
 | Important | 0 |
 | Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
-| In Progress (`loom:building`) | 4 |
-| PRs awaiting review | 7 |
-| Approved PRs awaiting merge | 1 |
+| In Progress (`loom:building`) | 2 |
+| PRs awaiting review | 5 |
+| Approved PRs awaiting merge | 2 |
 | Curated | 20 |
 | Architect / Hermit proposals | 3 |
 | Active epics | 6 |
