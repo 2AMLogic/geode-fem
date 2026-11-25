@@ -5,6 +5,12 @@ Maintained automatically by the Loom Guide role; entries are appended, never edi
 
 ### 2026-11-25
 
+- **Issue #1391** (closed): Remove flex_precision_spike example and flex feature: spike #451/#374 closed
+- **PR #1392**: chore: remove closed flex_precision_spike example and flex feature
+- **Issue #1810** (closed): Share p=1 driven forward+adjoint solve pipeline between driven::adjoint and driven::shape (~250 LOC)
+- **PR #1813**: refactor(driven): share p=1 forward+adjoint solve across adjoint and shape
+- **Issue #1808** (closed): No test validates conduction / eqs / thermal / self_heating reports against the committed report schema
+- **PR #1811**: test(cli): validate conduction, eqs, thermal and self-heating reports against schema
 - **PR #1806**: feat(cli): add geode thermal and self-heating subcommands
 - **Issue #1804** (closed): Expose steady heat and Joule self-heating solves through the geode CLI
 
