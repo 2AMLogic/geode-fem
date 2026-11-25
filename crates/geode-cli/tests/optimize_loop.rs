@@ -23,16 +23,11 @@ mod scratch_support;
 mod slab_guide;
 
 use scratch_support::Scratch;
-use slab_guide::write_slab_guide;
+use slab_guide::optimize_spec_value as spec_value;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use serde_json::{Value, json};
-
-/// Metres per mesh unit (a 2 cm × 1 cm guide).
-const LENGTH_UNIT_M: f64 = 1e-2;
-/// Slab permittivity.
-const SLAB_EPS: [f64; 2] = [2.5, -0.05];
 
 #[path = "support/cli.rs"]
 mod cli_support;
@@ -44,39 +39,6 @@ fn err(out: &Output, code: &str) -> String {
     let v: Value = serde_json::from_slice(&out.stdout).expect("error report");
     assert_eq!(v["error"]["code"], code, "{v}");
     v["error"]["message"].as_str().unwrap().to_string()
-}
-
-/// A slab-guide optimize spec: one design variable (the slab thickness,
-/// `stretch` along z, ports pinned), one observable `db(S[1,0])` at two
-/// frequencies, the thickness driven so `|S21|` hits `target_db`.
-fn spec_value(dir: &Path, edit: impl FnOnce(&mut Value)) -> Value {
-    let mesh = write_slab_guide(dir);
-    let mut v = json!({
-        "schema_version": 1,
-        "mesh": {"path": mesh.display().to_string(), "length_unit_m": LENGTH_UNIT_M},
-        "materials": [{"physical_group": "slab", "eps_r": SLAB_EPS}],
-        "boundary_conditions": {"pec": ["walls"]},
-        "wave_ports": [{"physical_group": "port_in"}, {"physical_group": "port_out"}],
-        "frequencies": {"unit": "k0", "values": [2.3, 2.7]},
-        "sensitivity": {
-            "parameters": [
-                {"kind": "shape", "name": "slab_thickness", "physical_group": "slab",
-                 "motion": "stretch", "axis": [0, 0, 1], "pinned": ["port_in", "port_out"]}
-            ],
-            "observables": [{"quantity": "s", "entry": [1, 0], "form": "db"}]
-        },
-        "optimize": {
-            "variables": [
-                {"parameter": "slab_thickness", "lower": 0.003, "upper": 0.005}
-            ],
-            "objective": [
-                {"observable": "db(S[1,0])", "mode": "equal", "target": -3.0}
-            ],
-            "stop": {"max_iter": 2, "pg_tol": 0.0, "f_rel_tol": 0.0}
-        }
-    });
-    edit(&mut v);
-    v
 }
 
 fn optimize(spec: &Path, outdir: &Path, extra: &[&str]) -> Output {

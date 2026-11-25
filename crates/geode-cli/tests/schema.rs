@@ -17,7 +17,7 @@
 //!   rejected by `geode check` — schema-valid is not spec-valid.
 //! * **Reports**: real reports of every kind `geode` emits without Gmsh
 //!   (`check` on every spec fixture, `driven`, `eigen`, `extract`,
-//!   `capacitance`, `inductance`, `error`) validate against the report
+//!   `capacitance`, `inductance`, `optimize`, `error`) validate against the report
 //!   schema, whose `oneOf` pins `kind` so exactly one branch matches. The
 //!   `mesh` report is validated by `tests/cookbook.rs` (it needs Gmsh).
 
@@ -29,6 +29,10 @@ use serde_json::{Value, json};
 #[path = "support/cli.rs"]
 mod cli_support;
 use cli_support::{geode, manifest_dir};
+#[path = "support/msh.rs"]
+mod msh;
+#[path = "support/slab_guide.rs"]
+mod slab_guide;
 
 fn stdout_json(out: &Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
@@ -492,6 +496,24 @@ fn driven_report_validates() {
         ts.to_str().unwrap(),
     ]);
     assert!(v["touchstone_file"].is_object());
+}
+
+#[test]
+fn optimize_report_validates() {
+    // The slab-guide design loop at two iterations (the spec of
+    // `optimize_loop.rs`): the report's `kind` pins the `optimize` branch.
+    let dir = scratch("optimize");
+    let spec = slab_guide::optimize_spec_value(&dir, |_| {});
+    let path = dir.join("spec.json");
+    std::fs::write(&path, serde_json::to_string(&spec).unwrap()).unwrap();
+    let outdir = dir.join("out");
+    let v = run_and_validate(&[
+        "optimize",
+        path.to_str().unwrap(),
+        "--outdir",
+        outdir.to_str().unwrap(),
+    ]);
+    assert_eq!(v["kind"], "optimize");
 }
 
 #[test]
