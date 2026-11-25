@@ -112,7 +112,7 @@
 //!
 //! The analytic oracle is [`crate::analytic::mie::mie_efficiencies`].
 
-use crate::vec3::{cross3 as cross, dot3 as dot, sub3 as sub};
+use crate::vec3::{cross3 as cross, dot3 as dot, sorted3, sub3 as sub};
 use faer::c64;
 use faer::sparse::{SparseColMat, Triplet};
 
@@ -171,7 +171,7 @@ pub fn mie_polarization_source(
 ///
 /// Promoted to `pub(crate)` so the near-to-far-field transform
 /// ([`crate::postproc::ntff`]) reuses the verified Whitney evaluators
-/// ([`eval_field_at_bary`], [`eval_curl`]) instead of duplicating the
+/// ([`eval_field_at_bary`]) instead of duplicating the
 /// per-tet geometry math.
 pub(crate) struct TetGeometry {
     /// Vertex coordinates.
@@ -242,6 +242,7 @@ pub(crate) fn eval_field_at_bary(
 }
 
 /// Piecewise-constant curl `∇×E = Σ_e d_e · 2 (∇λ_a × ∇λ_b)`.
+#[cfg(test)]
 pub(crate) fn eval_curl(geom: &TetGeometry, dofs: &[c64; 6]) -> [c64; 3] {
     let mut c = [c64::new(0.0, 0.0); 3];
     for (slot, &(a, b)) in TET_LOCAL_EDGES.iter().enumerate() {
@@ -365,11 +366,8 @@ pub fn e_norm_sq_integral(
 /// is linear over each face and integrated exactly by face-centroid
 /// quadrature. Fields are taken from the *inside* tet of each face.
 pub fn scattered_flux_power(mesh: &TetMesh, omega: f64, e_edges: &[c64], r_obs: f64) -> f64 {
-    use std::collections::HashMap;
-
     let edges = mesh.edges();
     assert_eq!(e_edges.len(), edges.len(), "one DOF per global edge");
-    let tet_edges = mesh.tet_edges();
     let centroids = crate::assembly::nedelec::tet_centroids(mesh);
 
     let inside: Vec<bool> = centroids
@@ -385,81 +383,10 @@ pub fn scattered_flux_power(mesh: &TetMesh, omega: f64, e_edges: &[c64], r_obs: 
         "all tets inside r_obs = {r_obs}; surface is empty"
     );
 
-    // Face key (sorted vertex triple) → how many *inside* and *total*
-    // adjacent tets.
-    let mut face_count: HashMap<(u32, u32, u32), (u8, u8)> = HashMap::new();
-    for (t, tet) in mesh.tets.iter().enumerate() {
-        for lf in &TET_LOCAL_FACES {
-            let mut tri = [tet[lf[0]], tet[lf[1]], tet[lf[2]]];
-            tri.sort_unstable();
-            let entry = face_count.entry((tri[0], tri[1], tri[2])).or_insert((0, 0));
-            if inside[t] {
-                entry.0 += 1;
-            }
-            entry.1 += 1;
-        }
-    }
-
-    let mut p_flux = 0.0_f64;
-    for (t, tet) in mesh.tets.iter().enumerate() {
-        if !inside[t] {
-            continue;
-        }
-        let geom = tet_geometry(mesh, tet);
-        let dofs = local_dofs(&tet_edges[t], e_edges);
-        let curl = eval_curl(&geom, &dofs);
-
-        for (local_face, lf) in TET_LOCAL_FACES.iter().enumerate() {
-            let mut tri = [tet[lf[0]], tet[lf[1]], tet[lf[2]]];
-            tri.sort_unstable();
-            let &(n_inside_adj, _n_total) = face_count
-                .get(&(tri[0], tri[1], tri[2]))
-                .expect("face derived from tet must be counted");
-            // Surface faces have exactly one inside tet adjacent. (An
-            // outer-boundary face owned by a single inside tet would
-            // also match, but r_obs < R_BUFFER makes that impossible.)
-            if n_inside_adj != 1 {
-                continue;
-            }
-
-            let p0 = mesh.nodes[tet[lf[0]] as usize];
-            let p1 = mesh.nodes[tet[lf[1]] as usize];
-            let p2 = mesh.nodes[tet[lf[2]] as usize];
-            let mut normal = cross(sub(p1, p0), sub(p2, p0));
-            let area = 0.5 * dot(normal, normal).sqrt();
-            // Orient outward: away from the opposite vertex (the local
-            // vertex not on this face, i.e. local index `local_face`).
-            let opposite = geom.verts[local_face];
-            let face_centroid: [f64; 3] = std::array::from_fn(|k| (p0[k] + p1[k] + p2[k]) / 3.0);
-            if dot(normal, sub(face_centroid, opposite)) < 0.0 {
-                normal = [-normal[0], -normal[1], -normal[2]];
-            }
-            let n_len = dot(normal, normal).sqrt();
-            let n_hat = [normal[0] / n_len, normal[1] / n_len, normal[2] / n_len];
-
-            // Barycentric coordinates of the face centroid: 1/3 on the
-            // three face vertices, 0 on the opposite one.
-            let mut lambda = [0.0_f64; 4];
-            for &lv in lf {
-                lambda[lv] = 1.0 / 3.0;
-            }
-            let e = eval_field_at_bary(&geom, &dofs, lambda);
-
-            // (E × C*) · n̂ with C = ∇×E.
-            let cc = [curl[0].conj(), curl[1].conj(), curl[2].conj()];
-            let exc = [
-                e[1] * cc[2] - e[2] * cc[1],
-                e[2] * cc[0] - e[0] * cc[2],
-                e[0] * cc[1] - e[1] * cc[0],
-            ];
-            let s_n = (exc[0] * c64::new(n_hat[0], 0.0)
-                + exc[1] * c64::new(n_hat[1], 0.0)
-                + exc[2] * c64::new(n_hat[2], 0.0))
-            .im / (2.0 * omega);
-            p_flux += area * s_n;
-        }
-    }
-    p_flux
+    // Surface faces have exactly one inside tet adjacent. (An
+    // outer-boundary face owned by a single inside tet would also
+    // match, but r_obs < R_BUFFER makes that impossible.)
+    poynting_flux_on_faces(&enclosed_surface_faces(mesh, &inside), omega, e_edges)
 }
 
 /// Radiated power via direct Poynting-flux integration of
@@ -500,91 +427,48 @@ pub fn flux_power_box(
     box_lo: [f64; 3],
     box_hi: [f64; 3],
 ) -> f64 {
-    use std::collections::HashMap;
-
     let edges = mesh.edges();
     assert_eq!(e_edges.len(), edges.len(), "one DOF per global edge");
-    let tet_edges = mesh.tet_edges();
-    let centroids = crate::assembly::nedelec::tet_centroids(mesh);
+    poynting_flux_on_faces(&box_surface_faces(mesh, box_lo, box_hi), omega, e_edges)
+}
 
-    let in_box = |c: &[f64; 3]| (0..3).all(|k| c[k] >= box_lo[k] && c[k] <= box_hi[k]);
-    let inside: Vec<bool> = centroids.iter().map(in_box).collect();
-    assert!(
-        inside.iter().any(|&b| b),
-        "no tets with centroid inside the box [{box_lo:?}, {box_hi:?}]"
-    );
-    assert!(
-        inside.iter().any(|&b| !b),
-        "all tets inside the box [{box_lo:?}, {box_hi:?}]; surface is empty"
-    );
-
-    // Face key (sorted vertex triple) → (#inside adjacent, #total).
-    let mut face_count: HashMap<(u32, u32, u32), (u8, u8)> = HashMap::new();
-    for (t, tet) in mesh.tets.iter().enumerate() {
-        for lf in &TET_LOCAL_FACES {
-            let mut tri = [tet[lf[0]], tet[lf[1]], tet[lf[2]]];
-            tri.sort_unstable();
-            let entry = face_count.entry((tri[0], tri[1], tri[2])).or_insert((0, 0));
-            if inside[t] {
-                entry.0 += 1;
-            }
-            entry.1 += 1;
+/// Tangential-field values at a surface face's centroid: `(E, ∇×E)` from
+/// the face's inside tet, contracting the sign-folded edge DOFs with the
+/// precomputed Whitney maps (`slot = 0..6`, `k = 0..3` — the same
+/// floating-point order as [`eval_field_at_bary`] / `eval_curl`).
+fn eval_face_fields(face: &BoxFaceBasis, e_edges: &[c64]) -> ([c64; 3], [c64; 3]) {
+    let dofs = local_dofs(&face.tet_edges, e_edges);
+    let mut e = [c64::new(0.0, 0.0); 3];
+    let mut curl = [c64::new(0.0, 0.0); 3];
+    for (slot, &d) in dofs.iter().enumerate() {
+        for k in 0..3 {
+            e[k] += d * c64::new(face.e_basis[slot][k], 0.0);
+            curl[k] += d * c64::new(face.curl_basis[slot][k], 0.0);
         }
     }
+    (e, curl)
+}
 
+/// `Σ_faces area · (1/2ω)·Im[(E × (∇×E)*) · n̂]` over a closed surface
+/// given as [`BoxFaceBasis`] faces — the shared Poynting-flux quadrature
+/// behind [`scattered_flux_power`] and [`flux_power_box`].
+fn poynting_flux_on_faces(faces: &[BoxFaceBasis], omega: f64, e_edges: &[c64]) -> f64 {
     let mut p_flux = 0.0_f64;
-    for (t, tet) in mesh.tets.iter().enumerate() {
-        if !inside[t] {
-            continue;
-        }
-        let geom = tet_geometry(mesh, tet);
-        let dofs = local_dofs(&tet_edges[t], e_edges);
-        let curl = eval_curl(&geom, &dofs);
-
-        for (local_face, lf) in TET_LOCAL_FACES.iter().enumerate() {
-            let mut tri = [tet[lf[0]], tet[lf[1]], tet[lf[2]]];
-            tri.sort_unstable();
-            let &(n_inside_adj, _n_total) = face_count
-                .get(&(tri[0], tri[1], tri[2]))
-                .expect("face derived from tet must be counted");
-            // A surface face has exactly one inside-tet neighbor.
-            if n_inside_adj != 1 {
-                continue;
-            }
-
-            let p0 = mesh.nodes[tet[lf[0]] as usize];
-            let p1 = mesh.nodes[tet[lf[1]] as usize];
-            let p2 = mesh.nodes[tet[lf[2]] as usize];
-            let mut normal = cross(sub(p1, p0), sub(p2, p0));
-            let area = 0.5 * dot(normal, normal).sqrt();
-            // Orient outward: away from the opposite vertex.
-            let opposite = geom.verts[local_face];
-            let face_centroid: [f64; 3] = std::array::from_fn(|k| (p0[k] + p1[k] + p2[k]) / 3.0);
-            if dot(normal, sub(face_centroid, opposite)) < 0.0 {
-                normal = [-normal[0], -normal[1], -normal[2]];
-            }
-            let n_len = dot(normal, normal).sqrt();
-            let n_hat = [normal[0] / n_len, normal[1] / n_len, normal[2] / n_len];
-
-            let mut lambda = [0.0_f64; 4];
-            for &lv in lf {
-                lambda[lv] = 1.0 / 3.0;
-            }
-            let e = eval_field_at_bary(&geom, &dofs, lambda);
-
-            // (E × C*) · n̂ with C = ∇×E; ½ Re(E×H*) = (1/2ω) Im[(E×C*)·n̂].
-            let cc = [curl[0].conj(), curl[1].conj(), curl[2].conj()];
-            let exc = [
-                e[1] * cc[2] - e[2] * cc[1],
-                e[2] * cc[0] - e[0] * cc[2],
-                e[0] * cc[1] - e[1] * cc[0],
-            ];
-            let s_n = (exc[0] * c64::new(n_hat[0], 0.0)
-                + exc[1] * c64::new(n_hat[1], 0.0)
-                + exc[2] * c64::new(n_hat[2], 0.0))
-            .im / (2.0 * omega);
-            p_flux += area * s_n;
-        }
+    for face in faces {
+        let (e, curl) = eval_face_fields(face, e_edges);
+        let n_hat = face.n_hat;
+        // (E × C*) · n̂ with C = ∇×E; ½ Re(E×H*) = (1/2ω) Im[(E×C*)·n̂].
+        let cc = [curl[0].conj(), curl[1].conj(), curl[2].conj()];
+        let exc = [
+            e[1] * cc[2] - e[2] * cc[1],
+            e[2] * cc[0] - e[0] * cc[2],
+            e[0] * cc[1] - e[1] * cc[0],
+        ];
+        let s_n = (exc[0] * c64::new(n_hat[0], 0.0)
+            + exc[1] * c64::new(n_hat[1], 0.0)
+            + exc[2] * c64::new(n_hat[2], 0.0))
+        .im / (2.0 * omega);
+        p_flux += face.area * s_n;
     }
     p_flux
 }
@@ -641,15 +525,7 @@ pub(crate) fn box_surface_samples(
     box_surface_faces(mesh, box_lo, box_hi)
         .into_iter()
         .map(|face| {
-            let dofs = local_dofs(&face.tet_edges, e_edges);
-            let mut e = [c64::new(0.0, 0.0); 3];
-            let mut curl = [c64::new(0.0, 0.0); 3];
-            for (slot, &d) in dofs.iter().enumerate() {
-                for k in 0..3 {
-                    e[k] += d * c64::new(face.e_basis[slot][k], 0.0);
-                    curl[k] += d * c64::new(face.curl_basis[slot][k], 0.0);
-                }
-            }
+            let (e, curl) = eval_face_fields(&face, e_edges);
             BoxFaceSample {
                 n_hat: face.n_hat,
                 area: face.area,
@@ -702,9 +578,6 @@ pub(crate) fn box_surface_faces(
     box_lo: [f64; 3],
     box_hi: [f64; 3],
 ) -> Vec<BoxFaceBasis> {
-    use std::collections::HashMap;
-
-    let tet_edges = mesh.tet_edges();
     let centroids = crate::assembly::nedelec::tet_centroids(mesh);
 
     let in_box = |c: &[f64; 3]| (0..3).all(|k| c[k] >= box_lo[k] && c[k] <= box_hi[k]);
@@ -717,17 +590,29 @@ pub(crate) fn box_surface_faces(
         inside.iter().any(|&b| !b),
         "all tets inside the box [{box_lo:?}, {box_hi:?}]; surface is empty"
     );
+    enclosed_surface_faces(mesh, &inside)
+}
 
-    let mut face_count: HashMap<(u32, u32, u32), (u8, u8)> = HashMap::new();
+/// Walk the closed polyhedral surface bounding the tets flagged in
+/// `inside` (faces with exactly one inside-tet neighbour) and return one
+/// [`BoxFaceBasis`] per surface face, in `mesh.tets` / [`TET_LOCAL_FACES`]
+/// order. The single surface walker behind [`box_surface_faces`],
+/// [`scattered_flux_power`] and [`flux_power_box`]. The caller validates
+/// that `inside` is neither empty nor all-true.
+fn enclosed_surface_faces(mesh: &TetMesh, inside: &[bool]) -> Vec<BoxFaceBasis> {
+    use std::collections::HashMap;
+
+    let tet_edges = mesh.tet_edges();
+
+    // Face key (sorted vertex triple) → number of *inside* adjacent tets.
+    let mut face_count: HashMap<[u32; 3], u8> = HashMap::new();
     for (t, tet) in mesh.tets.iter().enumerate() {
         for lf in &TET_LOCAL_FACES {
-            let mut tri = [tet[lf[0]], tet[lf[1]], tet[lf[2]]];
-            tri.sort_unstable();
-            let entry = face_count.entry((tri[0], tri[1], tri[2])).or_insert((0, 0));
+            let key = sorted3([tet[lf[0]], tet[lf[1]], tet[lf[2]]]);
+            let entry = face_count.entry(key).or_insert(0);
             if inside[t] {
-                entry.0 += 1;
+                *entry += 1;
             }
-            entry.1 += 1;
         }
     }
 
@@ -744,10 +629,9 @@ pub(crate) fn box_surface_faces(
         });
 
         for (local_face, lf) in TET_LOCAL_FACES.iter().enumerate() {
-            let mut tri = [tet[lf[0]], tet[lf[1]], tet[lf[2]]];
-            tri.sort_unstable();
-            let &(n_inside_adj, _n_total) = face_count
-                .get(&(tri[0], tri[1], tri[2]))
+            let key = sorted3([tet[lf[0]], tet[lf[1]], tet[lf[2]]]);
+            let n_inside_adj = *face_count
+                .get(&key)
                 .expect("face derived from tet must be counted");
             if n_inside_adj != 1 {
                 continue;
@@ -758,6 +642,8 @@ pub(crate) fn box_surface_faces(
             let p2 = mesh.nodes[tet[lf[2]] as usize];
             let mut normal = cross(sub(p1, p0), sub(p2, p0));
             let area = 0.5 * dot(normal, normal).sqrt();
+            // Orient outward: away from the opposite vertex (the local
+            // vertex not on this face, i.e. local index `local_face`).
             let opposite = geom.verts[local_face];
             let face_centroid: [f64; 3] = std::array::from_fn(|k| (p0[k] + p1[k] + p2[k]) / 3.0);
             if dot(normal, sub(face_centroid, opposite)) < 0.0 {
@@ -766,6 +652,8 @@ pub(crate) fn box_surface_faces(
             let n_len = dot(normal, normal).sqrt();
             let n_hat = [normal[0] / n_len, normal[1] / n_len, normal[2] / n_len];
 
+            // Barycentric coordinates of the face centroid: 1/3 on the
+            // three face vertices, 0 on the opposite one.
             let mut lambda = [0.0_f64; 4];
             for &lv in lf {
                 lambda[lv] = 1.0 / 3.0;
