@@ -37,14 +37,6 @@ name: ci-example-compile
 #     behind example targets precisely so that no `cargo test` invocation —
 #     not even `--include-ignored` — can pull one into CI. `cargo check`
 #     cannot run them, so that exclusion is preserved by construction.
-#   * `crates/geode-core/examples/flex_precision_spike.rs` is **excluded, and
-#     stays excluded**. It declares `required-features = ["flex"]`, and
-#     `flex = ["burn/flex"]` is documented in `crates/geode-core/Cargo.toml`
-#     as SPIKE-ONLY wiring for issue #451 — "not a supported solver backend
-#     and not exercised by any production code path or CI lane" — that pulls
-#     in a whole additional burn backend. A plain `--examples` run skips a
-#     target whose `required-features` are not enabled, so it is skipped
-#     automatically. **Do not add `--features flex` to make it build.**
 #   * No `libarpack2-dev` / `pkg-config` install. `arpack` is an opt-in
 #     feature and is not enabled here, so the system ARPACK library is not
 #     needed. Keeping it out is what makes this lane cheap.
