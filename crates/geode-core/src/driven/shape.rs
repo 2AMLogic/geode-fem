@@ -85,20 +85,18 @@
 
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor};
-use faer::linalg::solvers::Solve;
-use faer::sparse::{SparseColMat, Triplet};
-use faer::{Mat, c64};
+use faer::c64;
 
 use crate::assembly::hcurl_space::TetOrientation;
 use crate::assembly::nedelec::{
     NedelecScatterMap, assemble_global_nedelec_with_complex_epsilon_sparse,
-    assemble_global_nedelec_with_full_tensors_sparse, assemble_nedelec_current_rhs,
+    assemble_global_nedelec_with_full_tensors_sparse,
 };
-use crate::assembly::p1::upload_mesh;
 use crate::assembly::surface_p2::{
     p2_trace_dofs, tri_nedelec2_surface_flux_dual, tri_nedelec2_surface_mass_dual,
 };
 use crate::driven::adjoint::DrivenGradientProblem;
+use crate::driven::adjoint::{AssembledPencilHost, P1ForwardAdjoint, p1_forward_adjoint};
 use crate::driven::ports::{LumpedPort, assemble_port_flux, assemble_port_surface_mass};
 use crate::driven::solve::{
     CurrentSource, DrivenBcs, DrivenError, DrivenMaterials, DrivenOperator,
@@ -815,23 +813,6 @@ struct PortShapeCore {
     n_factorizations: usize,
 }
 
-/// Host-side, **pattern-indexed** blocks of the assembled Nédélec pencil
-/// `A(ω) = K − ω² M`, as produced by one material path's own global-assembly
-/// call and consumed by [`ports_shape_core`]. All four vectors are indexed by
-/// the shared sparsity-pattern slot ([`NedelecScatterMap::pattern`]).
-///
-/// The scalar-ε path's curl-curl block is purely real, so it supplies an
-/// **exact-zero** `k_im`; the shared pencil entry `c64::new(k_re, k_im)` is
-/// then bit-for-bit the `c64::new(k_re, 0.0)` that path used to compute by
-/// hand. The matched box-UPML path has a genuinely complex `K` (`ν = Λ⁻¹` is
-/// complex) and fills `k_im` from its own assembly.
-struct AssembledPencilHost {
-    k_re: Vec<f64>,
-    k_im: Vec<f64>,
-    m_re: Vec<f64>,
-    m_im: Vec<f64>,
-}
-
 /// One seeded coordinate's local element tangents for the shape contraction, as
 /// supplied by a material path's own `Dual` kernel call(s).
 ///
@@ -904,259 +885,37 @@ where
     ) -> AssembledPencilHost,
     D: Fn(usize, &[[Dual; 3]; 4]) -> LocalShapeTangents,
 {
-    let n_tets = mesh.n_tets();
     let n_nodes = mesh.n_nodes();
-    let edges = mesh.edges();
-    let n_edges = edges.len();
+    let n_edges = mesh.edges().len();
 
-    // --- Input validation (mirrors driven_solve + the adjoint bookkeeping) ---
-    if bcs.pec_interior_mask.len() != n_edges {
-        return Err(DrivenError::MaskDimMismatch {
-            got: bcs.pec_interior_mask.len(),
-            want: n_edges,
-        });
-    }
-    // Per-path material length check(s) — see the seam note above: this call
-    // sits between the mask and source checks so error precedence is unchanged.
-    validate_materials(n_tets)?;
-    if source.j_tet.len() != n_tets {
-        return Err(DrivenError::SourceDimMismatch {
-            got: source.j_tet.len(),
-            want: n_tets,
-        });
-    }
-    // Port validation mirrors the forward `DrivenOperator::assemble_impl` so the
-    // adjoint's port-loaded forward is the same system the public
-    // `driven_solve_with_ports` builds (error instead of panic on a bad spec).
-    for (index, port) in ports.iter().enumerate() {
-        let invalid = |reason: &str| DrivenError::InvalidPort {
-            index,
-            reason: reason.to_string(),
-        };
-        if port.faces.is_empty() {
-            return Err(invalid("port has no faces"));
-        }
-        if !(port.resistance.is_finite() && port.resistance > 0.0) {
-            return Err(invalid("resistance must be finite and positive"));
-        }
-        if !(port.width.is_finite() && port.width > 0.0) {
-            return Err(invalid("width must be finite and positive"));
-        }
-        if !(port.length.is_finite() && port.length > 0.0) {
-            return Err(invalid("length must be finite and positive"));
-        }
-        let e_norm = (port.e_hat[0].powi(2) + port.e_hat[1].powi(2) + port.e_hat[2].powi(2)).sqrt();
-        if (e_norm - 1.0).abs() >= 1e-8 || e_norm.is_nan() {
-            return Err(invalid("e_hat must be a unit vector"));
-        }
-        let n_nodes_u32 = n_nodes as u32;
-        if port
-            .faces
-            .iter()
-            .any(|f| f.iter().any(|&node| node >= n_nodes_u32))
-        {
-            return Err(invalid("face node index out of range"));
-        }
-    }
-    // Every port triangle must be a tet face (issue #725) — the Whitney port
-    // kernels below `expect` it.
-    validate_driven_surfaces(mesh, "lumped port", ports.iter().map(|p| p.faces))?;
-
-    // --- Edge tables and the sparsity scatter map (issue #218 pattern) ------
-    let (tet_idx, tet_sign) = mesh.tet_edge_tables();
-    let scatter = NedelecScatterMap::new(&tet_idx);
-    let pattern = scatter.pattern();
-
-    let (nodes_t, tets_t) = upload_mesh::<B>(mesh, device);
-
-    // --- Assemble K and M on the Burn backend (per-path material kernel). ---
-    // The scalar path's complex ε = ε′ − i·ε″ gives a real K (k_im ≡ 0); the
-    // matched-UPML path's complex ν = Λ⁻¹ gives a complex K.
-    let AssembledPencilHost {
-        k_re: k_re_host,
-        k_im: k_im_host,
-        m_re: m_re_host,
-        m_im: m_im_host,
-    } = assemble_pencil(nodes_t.clone(), tets_t.clone(), &tet_sign, &scatter);
-
-    // --- Current-source RHS moments ∫ N · J dV (material-independent). ------
-    let j_re: Vec<[f64; 3]> = source
-        .j_tet
-        .iter()
-        .map(|j| [j[0].re, j[1].re, j[2].re])
-        .collect();
-    let j_im: Vec<[f64; 3]> = source
-        .j_tet
-        .iter()
-        .map(|j| [j[0].im, j[1].im, j[2].im])
-        .collect();
-    let rhs_re_t = assemble_nedelec_current_rhs(
-        nodes_t.clone(),
-        tets_t.clone(),
-        &tet_idx,
-        &tet_sign,
-        n_edges,
-        &j_re,
-    );
-    let rhs_im_t =
-        assemble_nedelec_current_rhs(nodes_t, tets_t, &tet_idx, &tet_sign, n_edges, &j_im);
-    let rhs_re: Vec<f64> = rhs_re_t.into_data().iter::<f64>().collect();
-    let rhs_im: Vec<f64> = rhs_im_t.into_data().iter::<f64>().collect();
-
-    // b = iωμ₀ ∫ N · J dV with μ₀ = 1: iω (re + i·im) = ω(−im + i·re).
-    let mut b_full: Vec<c64> = rhs_re
-        .iter()
-        .zip(rhs_im.iter())
-        .map(|(&re, &im)| c64::new(-omega * im, omega * re))
-        .collect();
-
-    // --- Pinned-feed port boundary drive (issue #631, Phase A1). ------------
-    // b_i += (2jω/Z_s)(V_inc/l) ∮ N_i·ê dS, identical to the forward
-    // `assemble_b_at` / `driven_solve_with_ports`. The port flux functional f_i
-    // is geometry-constant under the pinned feed (∂b_port/∂X = 0), so it
-    // contributes only to the solves, not the geometry contraction.
-    for port in ports {
-        if port.v_inc == c64::new(0.0, 0.0) {
-            continue;
-        }
-        let z_s = port.surface_impedance();
-        let e_inc = port.v_inc * (1.0 / port.length);
-        let drive = c64::new(0.0, 2.0 * omega / z_s) * e_inc;
-        let flux = assemble_port_flux(mesh, port.faces, port.e_hat, &edges);
-        for (b, f) in b_full.iter_mut().zip(flux.iter()) {
-            *b += drive * *f;
-        }
-    }
-
-    // --- PEC interior reduction: full edge index → interior index. ----------
-    let mut remap = vec![-1_i64; n_edges];
-    let mut n_interior = 0_usize;
-    for (i, &keep) in bcs.pec_interior_mask.iter().enumerate() {
-        if keep {
-            remap[i] = n_interior as i64;
-            n_interior += 1;
-        }
-    }
-    if n_interior == 0 {
-        return Err(DrivenError::EmptyInterior);
-    }
-
-    // --- Interior A(ω) = K − ω² M by linear combination over the pattern. ---
-    let omega2 = omega * omega;
-    let a_of_idx = |idx: usize| -> c64 {
-        c64::new(k_re_host[idx], k_im_host[idx]) - c64::new(m_re_host[idx], m_im_host[idx]) * omega2
-    };
-    let mut kept: Vec<(usize, usize, usize)> = Vec::with_capacity(pattern.nnz());
-    let mut triplets: Vec<Triplet<usize, usize, c64>> = Vec::with_capacity(pattern.nnz());
-    for (idx, (&r_u32, &c_u32)) in pattern.rows.iter().zip(pattern.cols.iter()).enumerate() {
-        let (rr, cc) = (remap[r_u32 as usize], remap[c_u32 as usize]);
-        if rr < 0 || cc < 0 {
-            continue;
-        }
-        let (rr, cc) = (rr as usize, cc as usize);
-        triplets.push(Triplet::new(rr, cc, a_of_idx(idx)));
-        kept.push((rr, cc, idx));
-    }
-
-    // --- Pinned-feed port admittance A(ω) += (jω/Z_s) S_p (issue #631). ------
-    // S_p is the real-symmetric tangential surface mass; the scalar jω/Z_s
-    // scaling keeps A(ω)ᵀ = A(ω) (composed with the symmetric box-Λ tensors on
-    // the UPML path), so the transpose (adjoint) solve still reuses the forward
-    // LU. Interior-remapped and kept as its own list so the residual health
-    // check below re-forms the SAME loaded A. Under the pinned feed ∂S_p/∂X = 0,
-    // so these entries do NOT enter the geometry contraction.
-    let mut port_kept: Vec<(usize, usize, c64)> = Vec::new();
-    for port in ports {
-        let scale = c64::new(0.0, omega / port.surface_impedance());
-        for (r, c, v) in assemble_port_surface_mass(mesh, port.faces, &edges) {
-            let (rr, cc) = (remap[r], remap[c]);
-            if rr < 0 || cc < 0 {
-                continue;
-            }
-            let a_val = scale * v;
-            triplets.push(Triplet::new(rr as usize, cc as usize, a_val));
-            port_kept.push((rr as usize, cc as usize, a_val));
-        }
-    }
-
-    let a_int =
-        SparseColMat::<usize, c64>::try_new_from_triplets(n_interior, n_interior, &triplets)
-            .map_err(|e| DrivenError::SparseAssembly(format!("{e:?}")))?;
-
-    // --- Factor A(ω) ONCE. Serves both the forward and adjoint solves. ------
-    let lu = a_int
-        .as_ref()
-        .sp_lu()
-        .map_err(|e| DrivenError::Factorization(format!("{e:?}")))?;
-    let n_factorizations = 1;
-
-    // Interior-filtered RHS.
-    let b_int: Vec<c64> = bcs
-        .pec_interior_mask
-        .iter()
-        .zip(b_full.iter())
-        .filter_map(|(&keep, &b)| if keep { Some(b) } else { None })
-        .collect();
-
-    // --- Forward solve: A x = b. --------------------------------------------
-    let mut fwd: Mat<c64> = Mat::from_fn(n_interior, 1, |i, _| b_int[i]);
-    lu.solve_in_place(fwd.as_mut());
-    let x_int: Vec<c64> = (0..n_interior).map(|i| fwd[(i, 0)]).collect();
-
-    // Post-solve residual health check ‖A x − b‖ / ‖b‖ (includes the port load).
-    let residual_rel = {
-        let mut ax = vec![c64::new(0.0, 0.0); n_interior];
-        for &(rr, cc, idx) in &kept {
-            ax[rr] += a_of_idx(idx) * x_int[cc];
-        }
-        for &(rr, cc, a_val) in &port_kept {
-            ax[rr] += a_val * x_int[cc];
-        }
-        let mut res2 = 0.0_f64;
-        let mut b2 = 0.0_f64;
-        for i in 0..n_interior {
-            let r = ax[i] - b_int[i];
-            res2 += r.re * r.re + r.im * r.im;
-            b2 += b_int[i].re * b_int[i].re + b_int[i].im * b_int[i].im;
-        }
-        if b2 > 0.0 {
-            (res2 / b2).sqrt()
-        } else {
-            res2.sqrt()
-        }
-    };
-
-    // Scatter x to full length for the objective + contraction (PEC edges = 0).
-    let mut e_edges = vec![c64::new(0.0, 0.0); n_edges];
-    for (full_idx, &ri) in remap.iter().enumerate() {
-        if ri >= 0 {
-            e_edges[full_idx] = x_int[ri as usize];
-        }
-    }
-
-    // --- Objective and its Wirtinger cotangent ∂g/∂x. -----------------------
-    let (objective_value, dg_dx) = objective(&e_edges);
-    if dg_dx.len() != n_edges {
-        return Err(DrivenError::SparseAssembly(format!(
-            "objective cotangent length {} != edge count {n_edges}",
-            dg_dx.len()
-        )));
-    }
-    let g_x_int: Vec<c64> = bcs
-        .pec_interior_mask
-        .iter()
-        .zip(dg_dx.iter())
-        .filter_map(|(&keep, &g)| if keep { Some(g) } else { None })
-        .collect();
-
-    // --- Adjoint solve: Aᵀ λ = ∂g/∂x, REUSING the forward factorization. ----
-    // A is complex-symmetric (Aᵀ = A), so the transpose solve equals the
-    // forward solve here; it is written as the transpose to keep the general
-    // adjoint pattern explicit (and to fail loudly under a symmetry-breaking
-    // mutation). No refactorization.
-    let mut adj: Mat<c64> = Mat::from_fn(n_interior, 1, |i, _| g_x_int[i]);
-    lu.solve_transpose_in_place(adj.as_mut());
-    let lambda_int: Vec<c64> = (0..n_interior).map(|i| adj[(i, 0)]).collect();
+    // The shared p=1 forward + adjoint pipeline (validation, assembly, one
+    // factorization, forward solve, objective, transpose solve). The seam
+    // closures keep each material path's own operation order and error
+    // precedence (issue #1596); this path has no impedance walls.
+    let fa = p1_forward_adjoint::<B, _, _, _, _>(
+        mesh,
+        bcs,
+        omega,
+        source,
+        ports,
+        &[],
+        objective,
+        device,
+        validate_materials,
+        |_| Ok(()),
+        assemble_pencil,
+    )?;
+    let P1ForwardAdjoint {
+        objective: objective_value,
+        e_edges,
+        lambda_int,
+        remap,
+        tet_idx,
+        tet_sign,
+        residual_rel,
+        n_factorizations,
+        ..
+    } = fa;
 
     // λ scattered to full edge length, zero on PEC edges.
     let mut lambda_full = vec![c64::new(0.0, 0.0); n_edges];
@@ -1291,10 +1050,9 @@ where
                 nodes_t, tets_t, tet_sign, scatter, eps_r,
             );
             let k_re: Vec<f64> = sys.k_vals.into_data().iter::<f64>().collect();
-            let k_im = vec![0.0_f64; k_re.len()];
             AssembledPencilHost {
                 k_re,
-                k_im,
+                k_im: None,
                 m_re: sys.m_re_vals.into_data().iter::<f64>().collect(),
                 m_im: sys.m_im_vals.into_data().iter::<f64>().collect(),
             }
@@ -2022,7 +1780,7 @@ where
             );
             AssembledPencilHost {
                 k_re: sys.k_re_vals.into_data().iter::<f64>().collect(),
-                k_im: sys.k_im_vals.into_data().iter::<f64>().collect(),
+                k_im: Some(sys.k_im_vals.into_data().iter::<f64>().collect()),
                 m_re: sys.m_re_vals.into_data().iter::<f64>().collect(),
                 m_im: sys.m_im_vals.into_data().iter::<f64>().collect(),
             }

@@ -99,6 +99,7 @@
 //! `ports = surfaces = &[]`.
 
 use burn::tensor::backend::Backend;
+use burn::tensor::{Int, Tensor};
 use faer::linalg::solvers::Solve;
 use faer::sparse::{SparseColMat, Triplet};
 use faer::{Mat, c64};
@@ -115,7 +116,7 @@ use crate::driven::ports::WavePortSpec;
 use crate::driven::ports::{LumpedPort, assemble_port_flux, assemble_port_surface_mass};
 use crate::driven::solve::{
     CurrentSource, DrivenBcs, DrivenError, DrivenMaterials, DrivenOperator, DrivenSource,
-    SurfaceImpedanceBc, validate_driven_surfaces,
+    SurfaceImpedanceBc, validate_driven_surfaces, validate_lumped_ports,
 };
 use crate::elements::ElementOrder;
 use crate::elements::nedelec_p2::{TET_NEDELEC2_DOFS, tet_nedelec2_local};
@@ -458,8 +459,202 @@ where
     B: Backend,
     G: Fn(&[c64]) -> (f64, Vec<c64>),
 {
+    let omega2 = omega * omega;
+    let fa = p1_forward_adjoint::<B, _, _, _, _>(
+        mesh,
+        bcs,
+        omega,
+        source,
+        ports,
+        surfaces,
+        objective,
+        device,
+        |n_tets| {
+            if eps_r.len() != n_tets {
+                return Err(DrivenError::MaterialDimMismatch {
+                    got: eps_r.len(),
+                    want: n_tets,
+                });
+            }
+            Ok(())
+        },
+        |n_tets| {
+            if region_of_tet.len() != n_tets {
+                return Err(DrivenError::MaterialDimMismatch {
+                    got: region_of_tet.len(),
+                    want: n_tets,
+                });
+            }
+            if let Some(&bad) = region_of_tet.iter().find(|&&r| r >= n_regions) {
+                return Err(DrivenError::MaterialDimMismatch {
+                    got: bad,
+                    want: n_regions,
+                });
+            }
+            Ok(())
+        },
+        // K (real) and M(ε) with the COMPLEX permittivity ε = ε′ − i·ε″.
+        |nodes_t, tets_t, tet_sign, scatter| {
+            let sys = assemble_global_nedelec_with_complex_epsilon_sparse(
+                nodes_t, tets_t, tet_sign, scatter, eps_r,
+            );
+            AssembledPencilHost {
+                k_re: sys.k_vals.into_data().iter::<f64>().collect(),
+                k_im: None,
+                m_re: sys.m_re_vals.into_data().iter::<f64>().collect(),
+                m_im: sys.m_im_vals.into_data().iter::<f64>().collect(),
+            }
+        },
+    )?;
+    let P1ForwardAdjoint {
+        objective: objective_value,
+        e_edges,
+        x_int,
+        lambda_int,
+        n_interior,
+        tet_sign,
+        scatter,
+        kept,
+        residual_rel,
+        n_factorizations,
+        ..
+    } = fa;
+
+    // --- Gradient: from the single complex contraction z_k = λᵀ M_k x, both
+    // ∂g/∂ε′_k = 2 ω² Re[z_k] and ∂g/∂ε″_k = 2 ω² Im[z_k]. M_k is the mass
+    // assembled with ε set to the region-k REAL indicator (the exact analytic
+    // JVP of the ε′ − i·ε″ mass; the ε′/ε″ split lives entirely in the Re/Im
+    // read-out of z_k, not in M_k). The port / wall loads carry no ε. ---
+    let mut grad_eps_prime = vec![0.0_f64; n_regions];
+    let mut grad_eps_dprime = vec![0.0_f64; n_regions];
+    for k in 0..n_regions {
+        let eps_ind: Vec<c64> = region_of_tet
+            .iter()
+            .map(|&r| {
+                if r == k {
+                    c64::new(1.0, 0.0)
+                } else {
+                    c64::new(0.0, 0.0)
+                }
+            })
+            .collect();
+        // Fresh tensor handles: the Burn `assemble_*` kernels consume their
+        // node/connectivity tensors by value, so re-upload per region.
+        let (nk, tk) = upload_mesh::<B>(mesh, device);
+        let sys_k = assemble_global_nedelec_with_complex_epsilon_sparse(
+            nk, tk, &tet_sign, &scatter, &eps_ind,
+        );
+        let mk_re: Vec<f64> = sys_k.m_re_vals.into_data().iter::<f64>().collect();
+        let mk_im: Vec<f64> = sys_k.m_im_vals.into_data().iter::<f64>().collect();
+
+        // (M_k x)_int via triplet spmv over the kept interior entries.
+        let mut mkx = vec![c64::new(0.0, 0.0); n_interior];
+        for &(rr, cc, idx) in &kept {
+            let mk_val = c64::new(mk_re[idx], mk_im[idx]);
+            mkx[rr] += mk_val * x_int[cc];
+        }
+        // z_k = λᵀ (M_k x): bilinear (no conjugation). Re → ∂/∂ε′, Im → ∂/∂ε″.
+        let mut zk = c64::new(0.0, 0.0);
+        for i in 0..n_interior {
+            zk += lambda_int[i] * mkx[i];
+        }
+        grad_eps_prime[k] = 2.0 * omega2 * zk.re;
+        grad_eps_dprime[k] = 2.0 * omega2 * zk.im;
+    }
+
+    Ok(DrivenComplexAdjointGradient {
+        objective: objective_value,
+        grad_eps_prime,
+        grad_eps_dprime,
+        e_edges,
+        residual_rel,
+        n_factorizations,
+    })
+}
+
+/// Host-side, **pattern-indexed** blocks of the assembled Nédélec pencil
+/// `A(ω) = K − ω² M`, as produced by one material path's own global-assembly
+/// call and consumed by [`p1_forward_adjoint`]. All vectors are indexed by the
+/// shared sparsity-pattern slot ([`NedelecScatterMap::pattern`]).
+///
+/// The scalar-ε path's curl-curl block is purely real, so it supplies
+/// `k_im: None` (an exact-zero imaginary part, bit-for-bit the
+/// `c64::new(k_re, 0.0)` it always computed). The matched box-UPML path has a
+/// genuinely complex `K` (`ν = Λ⁻¹` is complex) and supplies `Some(k_im)`.
+pub(crate) struct AssembledPencilHost {
+    pub(crate) k_re: Vec<f64>,
+    pub(crate) k_im: Option<Vec<f64>>,
+    pub(crate) m_re: Vec<f64>,
+    pub(crate) m_im: Vec<f64>,
+}
+
+/// Result of the shared **`p=1`** forward + adjoint solve pipeline
+/// ([`p1_forward_adjoint`]): the forward field, the adjoint field and the
+/// interior bookkeeping both the material contraction
+/// ([`driven_material_adjoint_gradient_ports`]) and the nodal shape
+/// contraction (`driven::shape`) need.
+pub(crate) struct P1ForwardAdjoint {
+    pub(crate) objective: f64,
+    /// Forward field scattered to full edge length (PEC edges = 0).
+    pub(crate) e_edges: Vec<c64>,
+    pub(crate) x_int: Vec<c64>,
+    pub(crate) lambda_int: Vec<c64>,
+    /// Full edge index → interior index (`-1` on PEC edges).
+    pub(crate) remap: Vec<i64>,
+    pub(crate) n_interior: usize,
+    pub(crate) tet_idx: Vec<[u32; 6]>,
+    pub(crate) tet_sign: Vec<[i8; 6]>,
+    pub(crate) scatter: NedelecScatterMap,
+    /// Kept interior pattern entries `(row, col, pattern slot)`.
+    pub(crate) kept: Vec<(usize, usize, usize)>,
+    pub(crate) residual_rel: f64,
+    pub(crate) n_factorizations: usize,
+}
+
+/// The shared `p=1` forward + adjoint solve behind
+/// [`driven_material_adjoint_gradient_ports`] and the port-loaded shape adjoint
+/// (`driven::shape::ports_shape_core`); the `p=1` counterpart of
+/// [`p2_forward_adjoint`].
+///
+/// It validates the inputs, assembles the port- and wall-loaded
+/// complex-symmetric pencil, factors `A(ω)` **once**, runs the forward solve
+/// plus a residual health check, evaluates the objective and transpose-solves
+/// the adjoint off the same LU. Per-path differences are injected so each path
+/// keeps its own floating-point operation order and error precedence:
+///
+/// * `validate_materials(n_tets)` — after the PEC-mask check, before the
+///   source check.
+/// * `validate_after_source(n_tets)` — right after the source check, before
+///   port validation.
+/// * `assemble_pencil(nodes, tets, tet_sign, scatter)` — the path's own global
+///   Nédélec assembly call.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(crate) fn p1_forward_adjoint<B, G, V, S, A>(
+    mesh: &TetMesh,
+    bcs: &DrivenBcs<'_>,
+    omega: f64,
+    source: &CurrentSource,
+    ports: &[LumpedPort<'_>],
+    surfaces: &[SurfaceImpedanceBc<'_>],
+    objective: G,
+    device: &B::Device,
+    validate_materials: V,
+    validate_after_source: S,
+    assemble_pencil: A,
+) -> Result<P1ForwardAdjoint, DrivenError>
+where
+    B: Backend,
+    G: Fn(&[c64]) -> (f64, Vec<c64>),
+    V: FnOnce(usize) -> Result<(), DrivenError>,
+    S: FnOnce(usize) -> Result<(), DrivenError>,
+    A: FnOnce(
+        Tensor<B, 2>,
+        Tensor<B, 2, Int>,
+        &[[i8; 6]],
+        &NedelecScatterMap,
+    ) -> AssembledPencilHost,
+{
     let n_tets = mesh.n_tets();
-    let n_nodes = mesh.n_nodes();
     let edges = mesh.edges();
     let n_edges = edges.len();
 
@@ -470,64 +665,18 @@ where
             want: n_edges,
         });
     }
-    if eps_r.len() != n_tets {
-        return Err(DrivenError::MaterialDimMismatch {
-            got: eps_r.len(),
-            want: n_tets,
-        });
-    }
+    validate_materials(n_tets)?;
     if source.j_tet.len() != n_tets {
         return Err(DrivenError::SourceDimMismatch {
             got: source.j_tet.len(),
             want: n_tets,
         });
     }
-    if region_of_tet.len() != n_tets {
-        return Err(DrivenError::MaterialDimMismatch {
-            got: region_of_tet.len(),
-            want: n_tets,
-        });
-    }
-    if let Some(&bad) = region_of_tet.iter().find(|&&r| r >= n_regions) {
-        return Err(DrivenError::MaterialDimMismatch {
-            got: bad,
-            want: n_regions,
-        });
-    }
+    validate_after_source(n_tets)?;
     // Port validation mirrors the forward `DrivenOperator::assemble_impl`, so
     // the adjoint's forward is the same system `driven_solve_with_ports` /
-    // `s_parameter_operator` build (an error instead of a panic on a bad
-    // port).
-    for (index, port) in ports.iter().enumerate() {
-        let invalid = |reason: &str| DrivenError::InvalidPort {
-            index,
-            reason: reason.to_string(),
-        };
-        if port.faces.is_empty() {
-            return Err(invalid("port has no faces"));
-        }
-        if !(port.resistance.is_finite() && port.resistance > 0.0) {
-            return Err(invalid("resistance must be finite and positive"));
-        }
-        if !(port.width.is_finite() && port.width > 0.0) {
-            return Err(invalid("width must be finite and positive"));
-        }
-        if !(port.length.is_finite() && port.length > 0.0) {
-            return Err(invalid("length must be finite and positive"));
-        }
-        let e_norm = (port.e_hat[0].powi(2) + port.e_hat[1].powi(2) + port.e_hat[2].powi(2)).sqrt();
-        if (e_norm - 1.0).abs() >= 1e-8 || e_norm.is_nan() {
-            return Err(invalid("e_hat must be a unit vector"));
-        }
-        let n_nodes_u32 = n_nodes as u32;
-        if port
-            .faces
-            .iter()
-            .any(|f| f.iter().any(|&node| node >= n_nodes_u32))
-        {
-            return Err(invalid("face node index out of range"));
-        }
-    }
+    // `s_parameter_operator` build (an error instead of a panic on a bad port).
+    validate_lumped_ports(mesh, ports)?;
     // Every wall / port triangle must be a tet face (issue #725) — the
     // Whitney surface kernels below `expect` it.
     validate_driven_surfaces(
@@ -550,19 +699,15 @@ where
 
     let (nodes_t, tets_t) = upload_mesh::<B>(mesh, device);
 
-    // --- Assemble K and M(ε) with the COMPLEX permittivity ε = ε′ − i·ε″. ----
-    let sys = assemble_global_nedelec_with_complex_epsilon_sparse(
-        nodes_t.clone(),
-        tets_t.clone(),
-        &tet_sign,
-        &scatter,
-        eps_r,
-    );
-    let k_re_host: Vec<f64> = sys.k_vals.into_data().iter::<f64>().collect();
-    let m_re_host: Vec<f64> = sys.m_re_vals.into_data().iter::<f64>().collect();
-    let m_im_host: Vec<f64> = sys.m_im_vals.into_data().iter::<f64>().collect();
+    // --- Assemble K and M on the Burn backend (per-path material kernel). ---
+    let AssembledPencilHost {
+        k_re: k_re_host,
+        k_im: k_im_host,
+        m_re: m_re_host,
+        m_im: m_im_host,
+    } = assemble_pencil(nodes_t.clone(), tets_t.clone(), &tet_sign, &scatter);
 
-    // --- Current-source RHS moments ∫ N · J dV (ε-independent). --------------
+    // --- Current-source RHS moments ∫ N · J dV (material-independent). ------
     let j_re: Vec<[f64; 3]> = source
         .j_tet
         .iter()
@@ -593,9 +738,9 @@ where
         .map(|(&re, &im)| c64::new(-omega * im, omega * re))
         .collect();
 
-    // --- Port boundary drive (ε-independent; issue #739). --------------------
+    // --- Port boundary drive (geometry/material-independent; issue #739). ----
     // b_i += (2jω/Z_s)(V_inc/l) ∮ N_i·ê dS, identical to the forward
-    // `DrivenOperator` excitation (and the port-loaded shape adjoint).
+    // `DrivenOperator` excitation.
     for port in ports {
         if port.v_inc == c64::new(0.0, 0.0) {
             continue;
@@ -624,6 +769,10 @@ where
 
     // --- Interior A(ω) = K − ω² M by linear combination over the pattern. ---
     let omega2 = omega * omega;
+    let a_of_idx = |idx: usize| -> c64 {
+        let k_im = k_im_host.as_deref().map_or(0.0, |v| v[idx]);
+        c64::new(k_re_host[idx], k_im) - c64::new(m_re_host[idx], m_im_host[idx]) * omega2
+    };
     let mut kept: Vec<(usize, usize, usize)> = Vec::with_capacity(pattern.nnz());
     let mut triplets: Vec<Triplet<usize, usize, c64>> = Vec::with_capacity(pattern.nnz());
     for (idx, (&r_u32, &c_u32)) in pattern.rows.iter().zip(pattern.cols.iter()).enumerate() {
@@ -632,9 +781,7 @@ where
             continue;
         }
         let (rr, cc) = (rr as usize, cc as usize);
-        let a_val =
-            c64::new(k_re_host[idx], 0.0) - c64::new(m_re_host[idx], m_im_host[idx]) * omega2;
-        triplets.push(Triplet::new(rr, cc, a_val));
+        triplets.push(Triplet::new(rr, cc, a_of_idx(idx)));
         kept.push((rr, cc, idx));
     }
 
@@ -643,7 +790,8 @@ where
     // scalar times a real-symmetric surface mass, so A(ω)ᵀ = A(ω) and the
     // transpose (adjoint) solve still reuses the forward LU. Interior-remapped
     // and kept as their own list so the residual health check re-forms the
-    // SAME loaded A. They carry no ε, so they do NOT enter the contraction.
+    // SAME loaded A. They carry no material / geometry dependence the callers
+    // contract over.
     let mut load_kept: Vec<(usize, usize, c64)> = Vec::new();
     let surface_loads = ports
         .iter()
@@ -703,9 +851,7 @@ where
     let residual_rel = {
         let mut ax = vec![c64::new(0.0, 0.0); n_interior];
         for &(rr, cc, idx) in &kept {
-            let a_val =
-                c64::new(k_re_host[idx], 0.0) - c64::new(m_re_host[idx], m_im_host[idx]) * omega2;
-            ax[rr] += a_val * x_int[cc];
+            ax[rr] += a_of_idx(idx) * x_int[cc];
         }
         for &(rr, cc, a_val) in &load_kept {
             ax[rr] += a_val * x_int[cc];
@@ -748,57 +894,23 @@ where
         .collect();
 
     // --- Adjoint solve: Aᵀ λ = ∂g/∂x, REUSING the forward factorization. ----
+    // A is complex-symmetric (Aᵀ = A); written as the transpose to keep the
+    // general adjoint pattern explicit. No refactorization.
     let mut adj: Mat<c64> = Mat::from_fn(n_interior, 1, |i, _| g_x_int[i]);
     lu.solve_transpose_in_place(adj.as_mut());
     let lambda_int: Vec<c64> = (0..n_interior).map(|i| adj[(i, 0)]).collect();
 
-    // --- Gradient: from the single complex contraction z_k = λᵀ M_k x, both
-    // ∂g/∂ε′_k = 2 ω² Re[z_k] and ∂g/∂ε″_k = 2 ω² Im[z_k]. M_k is the mass
-    // assembled with ε set to the region-k REAL indicator (the exact analytic
-    // JVP of the ε′ − i·ε″ mass; the ε′/ε″ split lives entirely in the Re/Im
-    // read-out of z_k, not in M_k). The port / wall loads carry no ε. ---
-    let mut grad_eps_prime = vec![0.0_f64; n_regions];
-    let mut grad_eps_dprime = vec![0.0_f64; n_regions];
-    for k in 0..n_regions {
-        let eps_ind: Vec<c64> = region_of_tet
-            .iter()
-            .map(|&r| {
-                if r == k {
-                    c64::new(1.0, 0.0)
-                } else {
-                    c64::new(0.0, 0.0)
-                }
-            })
-            .collect();
-        // Fresh tensor handles: the Burn `assemble_*` kernels consume their
-        // node/connectivity tensors by value, so re-upload per region.
-        let (nk, tk) = upload_mesh::<B>(mesh, device);
-        let sys_k = assemble_global_nedelec_with_complex_epsilon_sparse(
-            nk, tk, &tet_sign, &scatter, &eps_ind,
-        );
-        let mk_re: Vec<f64> = sys_k.m_re_vals.into_data().iter::<f64>().collect();
-        let mk_im: Vec<f64> = sys_k.m_im_vals.into_data().iter::<f64>().collect();
-
-        // (M_k x)_int via triplet spmv over the kept interior entries.
-        let mut mkx = vec![c64::new(0.0, 0.0); n_interior];
-        for &(rr, cc, idx) in &kept {
-            let mk_val = c64::new(mk_re[idx], mk_im[idx]);
-            mkx[rr] += mk_val * x_int[cc];
-        }
-        // z_k = λᵀ (M_k x): bilinear (no conjugation). Re → ∂/∂ε′, Im → ∂/∂ε″.
-        let mut zk = c64::new(0.0, 0.0);
-        for i in 0..n_interior {
-            zk += lambda_int[i] * mkx[i];
-        }
-        grad_eps_prime[k] = 2.0 * omega2 * zk.re;
-        grad_eps_dprime[k] = 2.0 * omega2 * zk.im;
-    }
-
-    Ok(DrivenComplexAdjointGradient {
+    Ok(P1ForwardAdjoint {
         objective: objective_value,
-        grad_eps_prime,
-        grad_eps_dprime,
         e_edges,
+        x_int,
+        lambda_int,
+        remap,
+        n_interior,
+        tet_idx,
+        tet_sign,
+        scatter,
+        kept,
         residual_rel,
         n_factorizations,
     })
