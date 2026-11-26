@@ -4,7 +4,7 @@ Roadmap generated from the current GitHub label state by the Loom Guide role.
 Everything between the markers below is regenerated; do not edit it by hand.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-26T20:21:28Z (snapshot; compare against live labels)_
+_Generated: 2026-11-26T22:52:33Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
@@ -39,6 +39,7 @@ Issues currently being built (`loom:building`).
 
 - **#1416**: Prune superseded papers version snapshots (~440 MB tracked)
 - **#1823**: Share the 5×5 Krylov test fixture and consolidate Chebyshev comparison solves
+- **#1826**: Share the triangle integration loop for waveguide mode field energy
 
 ## PRs Awaiting Review
 
@@ -54,7 +55,8 @@ PRs waiting on Judge (`loom:review-requested`).
 
 PRs that passed review and are queued for Champion auto-merge (`loom:pr`).
 
-_None._
+- **#1825**: test: share 5x5 Krylov fixture and merge Chebyshev kind comparison
+- **#1827**: refactor: share the mode field-shape energy integration loop
 
 ## Proposed
 
@@ -79,7 +81,7 @@ Issues carrying `loom:curated`.
 - **#1488**: Honest GEODE-vs-Palace comparison (manuscript section) *(curated)*
 - **#1626**: Bring CHANGELOG [Unreleased] up to date with features merged since v0.9.0 *(curated)*
 - **#1629**: Research note: can Palace model the Design A Floquet cell for the #1581 cross-check? *(curated)* *(held)*
-- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example *(curated)*
+- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example *(curated)* *(held)*
 
 ## Proposed (Architect / Hermit)
 
@@ -104,9 +106,9 @@ Issues carrying `loom:curated`.
 | Very important | 1 |
 | Important | 0 |
 | Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
-| In Progress (`loom:building`) | 2 |
+| In Progress (`loom:building`) | 3 |
 | PRs awaiting review | 5 |
-| Approved PRs awaiting merge | 0 |
+| Approved PRs awaiting merge | 2 |
 | Curated | 20 |
 | Architect / Hermit proposals | 3 |
 | Active epics | 6 |
