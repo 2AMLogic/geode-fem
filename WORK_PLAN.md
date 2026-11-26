@@ -4,7 +4,7 @@ Roadmap generated from the current GitHub label state by the Loom Guide role.
 Everything between the markers below is regenerated; do not edit it by hand.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-26T08:51:16Z (snapshot; compare against live labels)_
+_Generated: 2026-11-26T20:21:28Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
@@ -38,6 +38,7 @@ Human-approved issues (`loom:issue`) ready for implementation — excluding held
 Issues currently being built (`loom:building`).
 
 - **#1416**: Prune superseded papers version snapshots (~440 MB tracked)
+- **#1823**: Share the 5×5 Krylov test fixture and consolidate Chebyshev comparison solves
 
 ## PRs Awaiting Review
 
@@ -103,7 +104,7 @@ Issues carrying `loom:curated`.
 | Very important | 1 |
 | Important | 0 |
 | Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
-| In Progress (`loom:building`) | 1 |
+| In Progress (`loom:building`) | 2 |
 | PRs awaiting review | 5 |
 | Approved PRs awaiting merge | 0 |
 | Curated | 20 |
