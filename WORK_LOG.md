@@ -3,8 +3,16 @@
 Chronological record of merged pull requests and closed issues, newest first.
 Maintained automatically by the Loom Guide role; entries are appended, never edited.
 
+### 2026-11-26
+
+- **PR #1817**: chore(deps): Bump xxhash-rust from 0.8.15 to 0.8.21
+- **Issue #1807** (closed): Consolidate three duplicated Huygens surface walkers in driven::scattering (~145 LOC)
+- **PR #1812**: refactor(scattering): share one closed-surface face walker
+
 ### 2026-11-25
 
+- **PR #1816**: test(cli): validate the geode optimize report against the report schema
+- **Issue #1814** (closed): Validate the optimize report against the committed report schema
 - **Issue #1391** (closed): Remove flex_precision_spike example and flex feature: spike #451/#374 closed
 - **PR #1392**: chore: remove closed flex_precision_spike example and flex feature
 - **Issue #1810** (closed): Share p=1 driven forward+adjoint solve pipeline between driven::adjoint and driven::shape (~250 LOC)
