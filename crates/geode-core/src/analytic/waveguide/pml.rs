@@ -1296,7 +1296,8 @@ pub(super) fn solve_dielectric_modes2_pml_attempt(
 /// energy integrand is `|E|² = |Eₓ|² + |E_y|²` (complex squared
 /// magnitudes), split into core (`tag == REGION_CORE`) and total buckets.
 /// Used to **confirm** the PML-selected mode is a genuine LP₀₁ (core
-/// fraction ≳0.8).
+/// fraction ≳0.8). Runs the same shared `integrate_mode_field_energy`
+/// loop as the real-field diagnostic.
 ///
 /// # Panics
 ///
@@ -1307,80 +1308,19 @@ pub fn dielectric_mode_field_shape_pml(
     region_tags: &[i32],
     mode: &DielectricModePml,
 ) -> ModeFieldShape {
-    assert_eq!(
-        region_tags.len(),
-        mesh.n_tris(),
-        "region_tags length ({}) must equal triangle count ({})",
-        region_tags.len(),
-        mesh.n_tris()
-    );
-    let n_dof = n_dof_2d_nedelec2(mesh);
-    assert_eq!(
-        mode.e_edges.len(),
-        n_dof,
-        "mode.e_edges length ({}) must equal p=2 DOF count ({})",
-        mode.e_edges.len(),
-        n_dof
-    );
-
-    let edges = mesh.edges();
-    let n_edges = edges.len();
-    let tri_edges = mesh.tri_edges();
-
-    let mut core_energy = 0.0_f64;
-    let mut total_energy = 0.0_f64;
-
-    for (tri_index, ((tri, row), &tag)) in mesh
-        .tris
-        .iter()
-        .zip(tri_edges.iter())
-        .zip(region_tags.iter())
-        .enumerate()
-    {
-        let coords = [
-            mesh.nodes[tri[0] as usize],
-            mesh.nodes[tri[1] as usize],
-            mesh.nodes[tri[2] as usize],
-        ];
-        let e1 = [coords[1][0] - coords[0][0], coords[1][1] - coords[0][1]];
-        let e2 = [coords[2][0] - coords[0][0], coords[2][1] - coords[0][1]];
-        let area_abs = 0.5 * (e1[0] * e2[1] - e1[1] * e2[0]).abs();
-
-        let dofs = tri_nedelec2_dofs(row, tri_index, n_edges);
-        let mut coef = [c64::new(0.0, 0.0); 8];
-        for (i, item) in coef.iter_mut().enumerate() {
-            let (gi, si) = dofs[i];
-            *item = c64::new(si, 0.0) * mode.e_edges[gi];
-        }
-
-        let mut tri_energy = 0.0_f64;
-        for q in TRI_QUAD_DEG4.iter() {
-            let lam = [q[0], q[1], q[2]];
-            let w = q[3] * area_abs;
-            let vals = tri_nedelec2_basis_values(&coords, lam);
+    integrate_mode_field_energy(
+        mesh,
+        region_tags,
+        &mode.e_edges,
+        |si, v| c64::new(si, 0.0) * v,
+        |coef, vals| {
             let mut ex = c64::new(0.0, 0.0);
             let mut ey = c64::new(0.0, 0.0);
             for k in 0..8 {
                 ex += coef[k] * c64::new(vals[k][0], 0.0);
                 ey += coef[k] * c64::new(vals[k][1], 0.0);
             }
-            tri_energy += w * (ex.norm() * ex.norm() + ey.norm() * ey.norm());
-        }
-
-        total_energy += tri_energy;
-        if tag == REGION_CORE {
-            core_energy += tri_energy;
-        }
-    }
-
-    let core_energy_fraction = if total_energy > 0.0 {
-        core_energy / total_energy
-    } else {
-        0.0
-    };
-    ModeFieldShape {
-        core_energy_fraction,
-        total_energy,
-        core_energy,
-    }
+            ex.norm() * ex.norm() + ey.norm() * ey.norm()
+        },
+    )
 }

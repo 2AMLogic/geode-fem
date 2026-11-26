@@ -5588,3 +5588,395 @@ fn pml_curl_floor_measurement_947() {
     assert_eq!(fundamentals.len(), 10, "{fundamentals:?}; {failures:#?}");
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1826: the field-energy integration loop shared by the real and the
+// PML `dielectric_mode_field_shape*` diagnostics
+// ---------------------------------------------------------------------------
+
+/// Deterministic signed sample in `[-1, 1]` from one splitmix64 step.
+fn splitmix_signed(z: &mut u64) -> f64 {
+    *z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut x = *z;
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+}
+
+/// Bit-for-bit comparison of the three energies of two [`ModeFieldShape`]s.
+fn assert_shape_bits_eq(a: &ModeFieldShape, b: &ModeFieldShape, what: &str) {
+    assert_eq!(
+        a.core_energy_fraction.to_bits(),
+        b.core_energy_fraction.to_bits(),
+        "{what}: core_energy_fraction"
+    );
+    assert_eq!(
+        a.total_energy.to_bits(),
+        b.total_energy.to_bits(),
+        "{what}: total_energy"
+    );
+    assert_eq!(
+        a.core_energy.to_bits(),
+        b.core_energy.to_bits(),
+        "{what}: core_energy"
+    );
+}
+
+/// Relative agreement of the three energies of two [`ModeFieldShape`]s.
+fn assert_shape_close(a: &ModeFieldShape, b: &ModeFieldShape, what: &str) {
+    let close = |x: f64, y: f64, field: &str| {
+        assert!(
+            (x - y).abs() <= 1e-12 * x.abs().max(y.abs()),
+            "{what}: {field} {x} vs {y}"
+        );
+    };
+    close(a.core_energy, b.core_energy, "core_energy");
+    close(a.total_energy, b.total_energy, "total_energy");
+    close(
+        a.core_energy_fraction,
+        b.core_energy_fraction,
+        "core_energy_fraction",
+    );
+}
+
+/// Frozen copy of the real-field integration loop
+/// `dielectric_mode_field_shape` ran before #1826 extracted the shared
+/// `integrate_mode_field_energy` helper (argument asserts dropped): the
+/// bit-for-bit characterization oracle of
+/// `mode_field_shape_shared_loop_is_bit_exact`. Orientation signs are folded
+/// once, `|E|² = Eₓ² + E_y²` in real arithmetic, the core tag is the literal
+/// `1` it compared against, and zero total energy yields a zero fraction.
+fn pre_1826_field_shape_real(
+    mesh: &TriMesh,
+    region_tags: &[i32],
+    e_edges: &[f64],
+) -> ModeFieldShape {
+    let n_edges = mesh.edges().len();
+    let tri_edges = mesh.tri_edges();
+
+    let mut core_energy = 0.0_f64;
+    let mut total_energy = 0.0_f64;
+
+    for (tri_index, ((tri, row), &tag)) in mesh
+        .tris
+        .iter()
+        .zip(tri_edges.iter())
+        .zip(region_tags.iter())
+        .enumerate()
+    {
+        let coords = [
+            mesh.nodes[tri[0] as usize],
+            mesh.nodes[tri[1] as usize],
+            mesh.nodes[tri[2] as usize],
+        ];
+        let e1 = [coords[1][0] - coords[0][0], coords[1][1] - coords[0][1]];
+        let e2 = [coords[2][0] - coords[0][0], coords[2][1] - coords[0][1]];
+        let area_abs = 0.5 * (e1[0] * e2[1] - e1[1] * e2[0]).abs();
+
+        let dofs = tri_nedelec2_dofs(row, tri_index, n_edges);
+        let mut coef = [0.0_f64; 8];
+        for (i, item) in coef.iter_mut().enumerate() {
+            let (gi, si) = dofs[i];
+            *item = si * e_edges[gi];
+        }
+
+        let mut tri_energy = 0.0_f64;
+        for q in TRI_QUAD_DEG4.iter() {
+            let lam = [q[0], q[1], q[2]];
+            let w = q[3] * area_abs;
+            let vals = tri_nedelec2_basis_values(&coords, lam);
+            let mut ex = 0.0_f64;
+            let mut ey = 0.0_f64;
+            for k in 0..8 {
+                ex += coef[k] * vals[k][0];
+                ey += coef[k] * vals[k][1];
+            }
+            tri_energy += w * (ex * ex + ey * ey);
+        }
+
+        total_energy += tri_energy;
+        if tag == 1 {
+            core_energy += tri_energy;
+        }
+    }
+
+    let core_energy_fraction = if total_energy > 0.0 {
+        core_energy / total_energy
+    } else {
+        0.0
+    };
+    ModeFieldShape {
+        core_energy_fraction,
+        total_energy,
+        core_energy,
+    }
+}
+
+/// Complex-field counterpart of [`pre_1826_field_shape_real`]: the frozen
+/// pre-#1826 loop of `dielectric_mode_field_shape_pml`, whose squared
+/// magnitude is `ex.norm() * ex.norm() + ey.norm() * ey.norm()`.
+fn pre_1826_field_shape_pml(
+    mesh: &TriMesh,
+    region_tags: &[i32],
+    e_edges: &[c64],
+) -> ModeFieldShape {
+    let n_edges = mesh.edges().len();
+    let tri_edges = mesh.tri_edges();
+
+    let mut core_energy = 0.0_f64;
+    let mut total_energy = 0.0_f64;
+
+    for (tri_index, ((tri, row), &tag)) in mesh
+        .tris
+        .iter()
+        .zip(tri_edges.iter())
+        .zip(region_tags.iter())
+        .enumerate()
+    {
+        let coords = [
+            mesh.nodes[tri[0] as usize],
+            mesh.nodes[tri[1] as usize],
+            mesh.nodes[tri[2] as usize],
+        ];
+        let e1 = [coords[1][0] - coords[0][0], coords[1][1] - coords[0][1]];
+        let e2 = [coords[2][0] - coords[0][0], coords[2][1] - coords[0][1]];
+        let area_abs = 0.5 * (e1[0] * e2[1] - e1[1] * e2[0]).abs();
+
+        let dofs = tri_nedelec2_dofs(row, tri_index, n_edges);
+        let mut coef = [c64::new(0.0, 0.0); 8];
+        for (i, item) in coef.iter_mut().enumerate() {
+            let (gi, si) = dofs[i];
+            *item = c64::new(si, 0.0) * e_edges[gi];
+        }
+
+        let mut tri_energy = 0.0_f64;
+        for q in TRI_QUAD_DEG4.iter() {
+            let lam = [q[0], q[1], q[2]];
+            let w = q[3] * area_abs;
+            let vals = tri_nedelec2_basis_values(&coords, lam);
+            let mut ex = c64::new(0.0, 0.0);
+            let mut ey = c64::new(0.0, 0.0);
+            for k in 0..8 {
+                ex += coef[k] * c64::new(vals[k][0], 0.0);
+                ey += coef[k] * c64::new(vals[k][1], 0.0);
+            }
+            tri_energy += w * (ex.norm() * ex.norm() + ey.norm() * ey.norm());
+        }
+
+        total_energy += tri_energy;
+        if tag == REGION_CORE {
+            core_energy += tri_energy;
+        }
+    }
+
+    let core_energy_fraction = if total_energy > 0.0 {
+        core_energy / total_energy
+    } else {
+        0.0
+    };
+    ModeFieldShape {
+        core_energy_fraction,
+        total_energy,
+        core_energy,
+    }
+}
+
+/// #1826: `dielectric_mode_field_shape` (real) and
+/// `dielectric_mode_field_shape_pml` (complex) share one integration loop
+/// and must keep returning exactly what their two pre-refactor loops
+/// returned — all three energy fields, bit for bit — on a core/cladding disk
+/// (the `disk_tri_mesh` tags of the real diagnostic) and on the three-region
+/// PML disk, both with negatively oriented local edges. Signed real
+/// coefficients go through both entry points, purely imaginary ones through
+/// the PML path, next to a mixed sample and the all-zero mode.
+#[test]
+fn mode_field_shape_shared_loop_is_bit_exact() {
+    assert_mode_field_shapes_bit_exact(&disk_tri_mesh_pml(1.0, 2.0, 3.0, 2, 8));
+    assert_mode_field_shapes_bit_exact(&disk_tri_mesh(1.0, 2.5, 3, 16));
+}
+
+fn assert_mode_field_shapes_bit_exact((mesh, tags): &(TriMesh, Vec<i32>)) {
+    assert!(tags.contains(&REGION_CORE));
+    assert!(tags.contains(&REGION_CLADDING));
+    assert!(
+        mesh.tri_edges().iter().flatten().any(|&(_, s)| s < 0),
+        "mesh must contain negatively oriented local edges"
+    );
+
+    let n_dof = n_dof_2d_nedelec2(mesh);
+    let mut z = 0x1826_u64;
+    let mut sample = || -> Vec<f64> { (0..n_dof).map(|_| splitmix_signed(&mut z)).collect() };
+    // (Re, Im) coefficient pairs; the last one is the all-zero mode.
+    let mut samples: Vec<(Vec<f64>, Vec<f64>)> = (0..4).map(|_| (sample(), sample())).collect();
+    samples.push((vec![0.0; n_dof], vec![0.0; n_dof]));
+
+    let pml_mode = |e_edges: Vec<c64>| DielectricModePml {
+        n_eff: c64::new(0.0, 0.0),
+        beta: c64::new(0.0, 0.0),
+        beta_sq: c64::new(0.0, 0.0),
+        guided: false,
+        e_edges,
+    };
+
+    for (case, (a, b)) in samples.iter().enumerate() {
+        let zero = case == samples.len() - 1;
+        let real_mode = DielectricMode {
+            n_eff: 0.0,
+            beta: 0.0,
+            beta_sq: 0.0,
+            guided: false,
+            e_edges: a.clone(),
+        };
+        let pml_real = pml_mode(a.iter().map(|&v| c64::new(v, 0.0)).collect());
+        let pml_imag = pml_mode(a.iter().map(|&v| c64::new(0.0, v)).collect());
+        let pml_second_real = pml_mode(b.iter().map(|&v| c64::new(v, 0.0)).collect());
+        let pml_mix = pml_mode(
+            a.iter()
+                .zip(b.iter())
+                .map(|(&x, &y)| c64::new(x, y))
+                .collect(),
+        );
+
+        let shape = dielectric_mode_field_shape(mesh, tags, &real_mode);
+        let shape_pml = |m: &DielectricModePml| dielectric_mode_field_shape_pml(mesh, tags, m);
+        let shape_pml_real = shape_pml(&pml_real);
+        let shape_pml_imag = shape_pml(&pml_imag);
+        let shape_pml_second_real = shape_pml(&pml_second_real);
+        let shape_pml_mix = shape_pml(&pml_mix);
+
+        // The pre-refactor loops, bit for bit.
+        assert_shape_bits_eq(
+            &shape,
+            &pre_1826_field_shape_real(mesh, tags, a),
+            &format!("case {case}: real entry point"),
+        );
+        for (what, m, s) in [
+            ("real", &pml_real, &shape_pml_real),
+            ("imaginary", &pml_imag, &shape_pml_imag),
+            ("second real", &pml_second_real, &shape_pml_second_real),
+            ("mixed", &pml_mix, &shape_pml_mix),
+        ] {
+            assert_shape_bits_eq(
+                s,
+                &pre_1826_field_shape_pml(mesh, tags, &m.e_edges),
+                &format!("case {case}: PML entry point, {what} coefficients"),
+            );
+        }
+
+        if zero {
+            // All-zero coefficients: no energy anywhere, and 0/0 never shows
+            // up as a NaN fraction.
+            for s in [
+                &shape,
+                &shape_pml_real,
+                &shape_pml_imag,
+                &shape_pml_second_real,
+                &shape_pml_mix,
+            ] {
+                assert_eq!(s.total_energy.to_bits(), 0, "case {case}: total_energy");
+                assert_eq!(s.core_energy.to_bits(), 0, "case {case}: core_energy");
+                assert_eq!(
+                    s.core_energy_fraction.to_bits(),
+                    0,
+                    "case {case}: core_energy_fraction"
+                );
+            }
+            continue;
+        }
+
+        // Core and non-core triangles both carry energy.
+        assert!(
+            shape.core_energy > 0.0 && shape.total_energy > shape.core_energy,
+            "case {case}: core {} vs total {}",
+            shape.core_energy,
+            shape.total_energy
+        );
+        // The same signed real coefficients through the PML entry point,
+        // and the same coefficients made purely imaginary.
+        assert_shape_close(
+            &shape,
+            &shape_pml_real,
+            &format!("case {case}: PML(real) vs real"),
+        );
+        assert_shape_close(
+            &shape,
+            &shape_pml_imag,
+            &format!("case {case}: PML(imaginary) vs real"),
+        );
+        // |E_a + i·E_b|² integrates to the sum of the two energies.
+        for (mix, sum, field) in [
+            (
+                shape_pml_mix.total_energy,
+                shape_pml_real.total_energy + shape_pml_second_real.total_energy,
+                "total_energy",
+            ),
+            (
+                shape_pml_mix.core_energy,
+                shape_pml_real.core_energy + shape_pml_second_real.core_energy,
+                "core_energy",
+            ),
+        ] {
+            assert!(
+                (mix - sum).abs() <= 1e-12 * mix,
+                "case {case}: mixed {field} {mix} vs {sum}"
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "must equal triangle count")]
+fn mode_field_shape_rejects_region_tags_length_mismatch() {
+    let (mesh, tags) = disk_tri_mesh_pml(1.0, 2.0, 3.0, 1, 4);
+    let mode = DielectricMode {
+        n_eff: 0.0,
+        beta: 0.0,
+        beta_sq: 0.0,
+        guided: false,
+        e_edges: vec![0.0; n_dof_2d_nedelec2(&mesh)],
+    };
+    let _ = dielectric_mode_field_shape(&mesh, &tags[..tags.len() - 1], &mode);
+}
+
+#[test]
+#[should_panic(expected = "must equal p=2 DOF count")]
+fn mode_field_shape_rejects_e_edges_length_mismatch() {
+    let (mesh, tags) = disk_tri_mesh_pml(1.0, 2.0, 3.0, 1, 4);
+    let mode = DielectricMode {
+        n_eff: 0.0,
+        beta: 0.0,
+        beta_sq: 0.0,
+        guided: false,
+        e_edges: vec![0.0; n_dof_2d_nedelec2(&mesh) - 1],
+    };
+    let _ = dielectric_mode_field_shape(&mesh, &tags, &mode);
+}
+
+#[test]
+#[should_panic(expected = "must equal triangle count")]
+fn mode_field_shape_pml_rejects_region_tags_length_mismatch() {
+    let (mesh, tags) = disk_tri_mesh_pml(1.0, 2.0, 3.0, 1, 4);
+    let mode = DielectricModePml {
+        n_eff: c64::new(0.0, 0.0),
+        beta: c64::new(0.0, 0.0),
+        beta_sq: c64::new(0.0, 0.0),
+        guided: false,
+        e_edges: vec![c64::new(0.0, 0.0); n_dof_2d_nedelec2(&mesh)],
+    };
+    let _ = dielectric_mode_field_shape_pml(&mesh, &tags[..tags.len() - 1], &mode);
+}
+
+#[test]
+#[should_panic(expected = "must equal p=2 DOF count")]
+fn mode_field_shape_pml_rejects_e_edges_length_mismatch() {
+    let (mesh, tags) = disk_tri_mesh_pml(1.0, 2.0, 3.0, 1, 4);
+    let mode = DielectricModePml {
+        n_eff: c64::new(0.0, 0.0),
+        beta: c64::new(0.0, 0.0),
+        beta_sq: c64::new(0.0, 0.0),
+        guided: false,
+        e_edges: vec![c64::new(0.0, 0.0); n_dof_2d_nedelec2(&mesh) - 1],
+    };
+    let _ = dielectric_mode_field_shape_pml(&mesh, &tags, &mode);
+}
