@@ -797,28 +797,29 @@ pub(super) fn tri_nedelec2_basis_values(coords: &[[f64; 2]; 3], lam: [f64; 3]) -
     [w0, q0, w1, q1, w2, q2, i0, i1]
 }
 
-/// Compute the [`ModeFieldShape`] (core-energy fraction) of a recovered p=2
-/// dielectric mode on a disk mesh, splitting the energy integral by the
-/// `disk_tri_mesh` region tags (tag `1` = core, anything else = cladding).
+/// Triangle integration loop shared by [`dielectric_mode_field_shape`] and
+/// [`dielectric_mode_field_shape_pml`]: reconstruct the transverse field on
+/// every triangle from a mode's p=2 `e_edges` DOFs (the DOF numbering of
+/// [`assemble_2d_nedelec2_with_epsilon`]), integrate `|E|²` with the
+/// degree-4 quadrature [`TRI_QUAD_DEG4`], and accumulate it into core
+/// (`tag == [`REGION_CORE`]`) and total buckets.
 ///
-/// The transverse field is reconstructed per triangle from the mode's
-/// `e_edges` p=2 DOFs via `tri_nedelec2_basis_values` and the global
-/// DOF map (the same numbering [`assemble_2d_nedelec2_with_epsilon`] uses),
-/// then `|E|²` is integrated with the degree-4 quadrature
-/// [`TRI_QUAD_DEG4`] and accumulated into core vs total buckets.
-///
-/// This is a **pure field-analysis diagnostic** — it touches none of the
-/// solver/eigensolve/assembly physics; it only reads back the field the
-/// solver already returned.
+/// The entry points differ only in their scalar arithmetic, supplied as
+/// closures over the coefficient type `S`: `oriented` folds a local DOF's
+/// `±1` orientation sign (from `tri_nedelec2_dofs`) into its global
+/// coefficient, and `sq_mag` returns `|E|²` at one quadrature point from the
+/// triangle's 8 signed local coefficients and the 8 basis values there.
 ///
 /// # Panics
 ///
-/// Panics if `region_tags.len() != mesh.n_tris()` or if `mode.e_edges` is
-/// not the p=2 DOF length for `mesh`.
-pub fn dielectric_mode_field_shape(
+/// Panics if `region_tags.len() != mesh.n_tris()` or if `e_edges` is not the
+/// p=2 DOF length for `mesh`.
+pub(super) fn integrate_mode_field_energy<S: Copy>(
     mesh: &TriMesh,
     region_tags: &[i32],
-    mode: &DielectricMode,
+    e_edges: &[S],
+    oriented: impl Fn(f64, S) -> S,
+    sq_mag: impl Fn(&[S; 8], &[[f64; 2]; 8]) -> f64,
 ) -> ModeFieldShape {
     assert_eq!(
         region_tags.len(),
@@ -829,15 +830,14 @@ pub fn dielectric_mode_field_shape(
     );
     let n_dof = n_dof_2d_nedelec2(mesh);
     assert_eq!(
-        mode.e_edges.len(),
+        e_edges.len(),
         n_dof,
         "mode.e_edges length ({}) must equal p=2 DOF count ({})",
-        mode.e_edges.len(),
+        e_edges.len(),
         n_dof
     );
 
-    let edges = mesh.edges();
-    let n_edges = edges.len();
+    let n_edges = mesh.edges().len();
     let tri_edges = mesh.tri_edges();
 
     let mut core_energy = 0.0_f64;
@@ -861,28 +861,18 @@ pub fn dielectric_mode_field_shape(
 
         let dofs = tri_nedelec2_dofs(row, tri_index, n_edges);
         // Local coefficients with orientation sign folded in.
-        let mut coef = [0.0_f64; 8];
-        for (i, item) in coef.iter_mut().enumerate() {
-            let (gi, si) = dofs[i];
-            *item = si * mode.e_edges[gi];
-        }
+        let coef: [S; 8] = std::array::from_fn(|i| oriented(dofs[i].1, e_edges[dofs[i].0]));
 
         let mut tri_energy = 0.0_f64;
         for q in TRI_QUAD_DEG4.iter() {
             let lam = [q[0], q[1], q[2]];
             let w = q[3] * area_abs;
             let vals = tri_nedelec2_basis_values(&coords, lam);
-            let mut ex = 0.0_f64;
-            let mut ey = 0.0_f64;
-            for k in 0..8 {
-                ex += coef[k] * vals[k][0];
-                ey += coef[k] * vals[k][1];
-            }
-            tri_energy += w * (ex * ex + ey * ey);
+            tri_energy += w * sq_mag(&coef, &vals);
         }
 
         total_energy += tri_energy;
-        if tag == 1 {
+        if tag == REGION_CORE {
             core_energy += tri_energy;
         }
     }
@@ -897,6 +887,45 @@ pub fn dielectric_mode_field_shape(
         total_energy,
         core_energy,
     }
+}
+
+/// Compute the [`ModeFieldShape`] (core-energy fraction) of a recovered p=2
+/// dielectric mode on a disk mesh, splitting the energy integral by the
+/// `disk_tri_mesh` region tags (tag [`REGION_CORE`] = core, anything else =
+/// cladding).
+///
+/// The transverse field is reconstructed per triangle from the mode's
+/// `e_edges` p=2 DOFs and `|E|² = Eₓ² + E_y²` is integrated in real
+/// arithmetic by the shared `integrate_mode_field_energy` loop.
+///
+/// This is a **pure field-analysis diagnostic** — it touches none of the
+/// solver/eigensolve/assembly physics; it only reads back the field the
+/// solver already returned.
+///
+/// # Panics
+///
+/// Panics if `region_tags.len() != mesh.n_tris()` or if `mode.e_edges` is
+/// not the p=2 DOF length for `mesh`.
+pub fn dielectric_mode_field_shape(
+    mesh: &TriMesh,
+    region_tags: &[i32],
+    mode: &DielectricMode,
+) -> ModeFieldShape {
+    integrate_mode_field_energy(
+        mesh,
+        region_tags,
+        &mode.e_edges,
+        |si, v| si * v,
+        |coef, vals| {
+            let mut ex = 0.0_f64;
+            let mut ey = 0.0_f64;
+            for k in 0..8 {
+                ex += coef[k] * vals[k][0];
+                ey += coef[k] * vals[k][1];
+            }
+            ex * ex + ey * ey
+        },
+    )
 }
 
 /// p=2 analogue of [`dielectric_raw_candidates_with_target`]: assemble the
