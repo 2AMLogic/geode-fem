@@ -4,7 +4,7 @@ Roadmap generated from the current GitHub label state by the Loom Guide role.
 Everything between the markers below is regenerated; do not edit it by hand.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-25T21:43:07Z (snapshot; compare against live labels)_
+_Generated: 2026-11-26T08:51:16Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
@@ -32,13 +32,13 @@ Human-approved issues (`loom:issue`) ready for implementation — excluding held
 - **#1393**: Consolidate duplicated onnx/tfjava sphere-PEC reference harnesses
 - **#1488**: Honest GEODE-vs-Palace comparison (manuscript section)
 - **#1626**: Bring CHANGELOG [Unreleased] up to date with features merged since v0.9.0
+- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example
 
 ## In Progress
 
 Issues currently being built (`loom:building`).
 
 - **#1416**: Prune superseded papers version snapshots (~440 MB tracked)
-- **#1807**: Consolidate three duplicated Huygens surface walkers in driven::scattering (~145 LOC)
 
 ## PRs Awaiting Review
 
@@ -54,8 +54,7 @@ PRs waiting on Judge (`loom:review-requested`).
 
 PRs that passed review and are queued for Champion auto-merge (`loom:pr`).
 
-- **#1812**: refactor(scattering): share one closed-surface face walker
-- **#1817**: chore(deps): Bump xxhash-rust from 0.8.15 to 0.8.21
+_None._
 
 ## Proposed
 
@@ -80,7 +79,7 @@ Issues carrying `loom:curated`.
 - **#1488**: Honest GEODE-vs-Palace comparison (manuscript section) *(curated)*
 - **#1626**: Bring CHANGELOG [Unreleased] up to date with features merged since v0.9.0 *(curated)*
 - **#1629**: Research note: can Palace model the Design A Floquet cell for the #1581 cross-check? *(curated)* *(held)*
-- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example *(curated)* *(held)*
+- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example *(curated)*
 
 ## Proposed (Architect / Hermit)
 
@@ -104,10 +103,10 @@ Issues carrying `loom:curated`.
 | Operator merge-risk holds | 0 |
 | Very important | 1 |
 | Important | 0 |
-| Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
-| In Progress (`loom:building`) | 2 |
+| Ready (`loom:issue`, net of holds/building/merge-pending) | 6 |
+| In Progress (`loom:building`) | 1 |
 | PRs awaiting review | 5 |
-| Approved PRs awaiting merge | 2 |
+| Approved PRs awaiting merge | 0 |
 | Curated | 20 |
 | Architect / Hermit proposals | 3 |
 | Active epics | 6 |
