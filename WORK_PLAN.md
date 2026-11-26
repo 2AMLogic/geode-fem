@@ -32,7 +32,6 @@ Human-approved issues (`loom:issue`) ready for implementation — excluding held
 - **#1393**: Consolidate duplicated onnx/tfjava sphere-PEC reference harnesses
 - **#1488**: Honest GEODE-vs-Palace comparison (manuscript section)
 - **#1626**: Bring CHANGELOG [Unreleased] up to date with features merged since v0.9.0
-- **#1794**: ci-example-compile.yml: stale comment block about the removed flex_precision_spike example
 
 ## In Progress
 
@@ -103,7 +102,7 @@ Issues carrying `loom:curated`.
 | Operator merge-risk holds | 0 |
 | Very important | 1 |
 | Important | 0 |
-| Ready (`loom:issue`, net of holds/building/merge-pending) | 6 |
+| Ready (`loom:issue`, net of holds/building/merge-pending) | 5 |
 | In Progress (`loom:building`) | 1 |
 | PRs awaiting review | 5 |
 | Approved PRs awaiting merge | 0 |
