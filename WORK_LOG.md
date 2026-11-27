@@ -3,6 +3,11 @@
 Chronological record of merged pull requests and closed issues, newest first.
 Maintained automatically by the Loom Guide role; entries are appended, never edited.
 
+### 2026-11-27
+
+- **Issue #1829** (closed): Extract the 30 driven shape-gradient unit tests into a child module
+- **PR #1831**: refactor: move inline driven shape-gradient tests to shape/tests.rs
+
 ### 2026-11-26
 
 - **Issue #1826** (closed): Share the triangle integration loop for waveguide mode field energy
