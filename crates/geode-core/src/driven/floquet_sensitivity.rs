@@ -569,6 +569,9 @@ struct ShapeData<'a> {
     moving: Vec<bool>,
 }
 
+type LocalDualFn<const N: usize> =
+    fn(&[[Dual; 3]; 4]) -> ([[Dual; N]; N], [[Dual; N]; N], [[Dual; 3]; N]);
+
 struct Prepared<'a> {
     cell: &'a FloquetCell,
     geo: &'a FloquetGeometry<'a>,
@@ -576,11 +579,9 @@ struct Prepared<'a> {
     shape: Option<ShapeData<'a>>,
     params: Vec<SParam>,
     /// The H(curl) space of the cell's order, rebuilt from the geometry's
-    /// mesh: the per-tet DOF tables of the p=2 gather and the DOF→entity
+    /// mesh: the per-tet DOFs and orientations for both orders and the DOF→entity
     /// map of the pinned-node fence (issue #1683).
     space: HcurlSpace,
-    tet_idx: Vec<[u32; 6]>,
-    tet_sign: Vec<[i8; 6]>,
 }
 
 /// The forward and adjoint full-edge fields of the lumped delta-gap feed
@@ -647,7 +648,6 @@ impl<'a> Prepared<'a> {
         if design.material.is_none() && design.shape.is_none() {
             return Err(invalid("the design has no parameters".into()));
         }
-        let (tet_idx, tet_sign) = mesh.tet_edge_tables();
 
         let mut params = Vec::new();
         if let Some(m) = &design.material {
@@ -719,8 +719,6 @@ impl<'a> Prepared<'a> {
             shape,
             params,
             space,
-            tet_idx,
-            tet_sign,
         })
     }
 
@@ -838,174 +836,53 @@ impl<'a> Prepared<'a> {
     /// at the cell's element order (issue #1683).
     fn volume_terms(&self, omega: f64, lefts: &[&[c64]], rights: &[&[c64]]) -> Vec<Vec<c64>> {
         match self.cell.operator().order() {
-            ElementOrder::P2 => self.volume_terms_p2(omega, lefts, rights),
-            ElementOrder::P1 => self.volume_terms_p1(omega, lefts, rights),
+            ElementOrder::P1 => {
+                self.volume_terms_order::<6>(omega, lefts, rights, nedelec_local_dual)
+            }
+            ElementOrder::P2 => self.volume_terms_order::<TET_NEDELEC2_DOFS>(
+                omega,
+                lefts,
+                rights,
+                nedelec2_local_dual,
+            ),
         }
     }
 
-    /// [`Self::volume_terms`] at p=2 (issue #1683): the 20 second-order
-    /// Nédélec locals of [`nedelec2_local_dual`], gathered orientation-free
-    /// from the ascending-sorted local layout of [`HcurlSpace`]. The
-    /// identity, the parameter order and the `ω` scalings are the p=1
-    /// path's; only the element kernel and the gather differ.
-    fn volume_terms_p2(&self, omega: f64, lefts: &[&[c64]], rights: &[&[c64]]) -> Vec<Vec<c64>> {
+    fn volume_terms_order<const N: usize>(
+        &self,
+        omega: f64,
+        lefts: &[&[c64]],
+        rights: &[&[c64]],
+        local_dual: LocalDualFn<N>,
+    ) -> Vec<Vec<c64>> {
         let zero = c64::new(0.0, 0.0);
         let n_pairs = lefts.len();
         let omega2 = omega * omega;
         let mesh = self.geo.mesh;
         let space = &self.space;
         let mut out = vec![vec![zero; n_pairs]; self.params.len()];
-        // p=2 locals are built on the ascending-sorted vertices and scatter
-        // with unit sign, so the gather is a plain DOF lookup.
-        let gather = |v: &[c64], t: usize| -> [c64; TET_NEDELEC2_DOFS] {
+        let gather = |v: &[c64], t: usize| -> [c64; N] {
             let dofs = space.tet_dofs(t);
-            std::array::from_fn(|i| v[dofs[i] as usize])
+            match space.tet_orientation(t) {
+                TetOrientation::EdgeSigns(signs) => {
+                    std::array::from_fn(|i| v[dofs[i] as usize] * f64::from(signs[i]))
+                }
+                TetOrientation::AscendingPerm(_) => std::array::from_fn(|i| v[dofs[i] as usize]),
+            }
         };
         let coords = |t: usize| -> [[f64; 3]; 4] { space.tet_local_coords(mesh, t) };
 
-        // Material: z_R = Σ_{t ∈ R} lᵀ M_t r (the p=2 mass, ε = 1).
+        // Material: z_R = Σ_{t ∈ R} lᵀ M_t r (the local mass, ε = 1).
         if let Some(m) = self.material {
             let mut z = vec![vec![zero; n_pairs]; m.n_regions()];
             for (t, r) in m.region_of_tet().iter().enumerate() {
                 let Some(region) = *r else { continue };
-                let (_, mm, _) = nedelec2_local_dual(&coords(t).map(|v| v.map(Dual::cst)));
+                let (_, mm, _) = local_dual(&coords(t).map(|v| v.map(Dual::cst)));
                 for q in 0..n_pairs {
                     let (l, r) = (gather(lefts[q], t), gather(rights[q], t));
                     let mut acc = zero;
-                    for i in 0..TET_NEDELEC2_DOFS {
-                        for j in 0..TET_NEDELEC2_DOFS {
-                            acc += l[i] * r[j] * mm[i][j].re;
-                        }
-                    }
-                    z[region][q] += acc;
-                }
-            }
-            for (i, prm) in self.params.iter().enumerate() {
-                match *prm {
-                    SParam::EpsPrime { region } => {
-                        for (o, &zz) in out[i].iter_mut().zip(&z[region]) {
-                            *o = zz * (-omega2);
-                        }
-                    }
-                    SParam::EpsDoublePrime { region } => {
-                        for (o, &zz) in out[i].iter_mut().zip(&z[region]) {
-                            *o = zz * c64::new(0.0, omega2);
-                        }
-                    }
-                    // ∂A/∂σ_k = jω M_k (the forward is A = K − ω²εM + jωσM).
-                    // Not enumerated by this builder; kept exact so a future
-                    // σ column cannot silently get a zero gradient.
-                    SParam::Sigma { region } => {
-                        for (o, &zz) in out[i].iter_mut().zip(&z[region]) {
-                            *o = zz * c64::new(0.0, omega);
-                        }
-                    }
-                    // Shape is handled below; Floquet never builds direction or wall
-                    // columns (only ε′/ε″/shape above), so these contribute nothing here.
-                    SParam::Shape { .. } | SParam::EpsDirection { .. } | SParam::Wall { .. } => {}
-                }
-            }
-        }
-
-        // Shape: Σ_t Σ_(a,axis) V[node][axis] · l_locᵀ ∂A_loc r_loc. Local
-        // slot `a` is the ascending-sorted position of vertex `tet[perm[a]]`
-        // (the p=2 layout of [`HcurlSpace`]).
-        if let Some(sh) = &self.shape {
-            let first_shape = self
-                .params
-                .iter()
-                .position(|p| matches!(p, SParam::Shape { .. }))
-                .expect("shape data implies shape params");
-            let iomega = c64::new(0.0, omega);
-            for (t, tet) in mesh.tets.iter().enumerate() {
-                if !tet.iter().any(|&nd| sh.moving[nd as usize]) {
-                    continue;
-                }
-                let l_loc: Vec<[c64; TET_NEDELEC2_DOFS]> =
-                    lefts.iter().map(|l| gather(l, t)).collect();
-                let r_loc: Vec<[c64; TET_NEDELEC2_DOFS]> =
-                    rights.iter().map(|r| gather(r, t)).collect();
-                let base = coords(t);
-                let sig_t = self.geo.sigma.map_or(0.0, |s| s[t]);
-                let mass_coeff = self.geo.eps_r[t] * (-omega2) + iomega * sig_t;
-                let TetOrientation::AscendingPerm(perm) = space.tet_orientation(t) else {
-                    unreachable!("a p=2 space orients every tet by ascending permutation")
-                };
-                for a in 0..4 {
-                    let node = tet[perm[a]] as usize;
-                    if !sh.moving[node] {
-                        continue;
-                    }
-                    for axis in 0..3 {
-                        if (0..sh.design.n_columns())
-                            .all(|c| sh.design.column(c)[node][axis] == 0.0)
-                        {
-                            continue;
-                        }
-                        let mut dc = base.map(|v| v.map(Dual::cst));
-                        dc[a][axis] = Dual::var(base[a][axis]);
-                        let (dk, dm, _) = nedelec2_local_dual(&dc);
-                        let da: [[c64; TET_NEDELEC2_DOFS]; TET_NEDELEC2_DOFS] =
-                            std::array::from_fn(|i| {
-                                std::array::from_fn(|j| {
-                                    c64::new(dk[i][j].du, 0.0) + mass_coeff * dm[i][j].du
-                                })
-                            });
-                        let vals: Vec<c64> = (0..n_pairs)
-                            .map(|q| {
-                                let (l, r) = (&l_loc[q], &r_loc[q]);
-                                let mut acc = zero;
-                                for i in 0..TET_NEDELEC2_DOFS {
-                                    let mut row = zero;
-                                    for j in 0..TET_NEDELEC2_DOFS {
-                                        row += da[i][j] * r[j];
-                                    }
-                                    acc += l[i] * row;
-                                }
-                                acc
-                            })
-                            .collect();
-                        for c in 0..sh.design.n_columns() {
-                            let v = sh.design.column(c)[node][axis];
-                            if v == 0.0 {
-                                continue;
-                            }
-                            for (o, &val) in out[first_shape + c].iter_mut().zip(&vals) {
-                                *o += val * v;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// [`Self::volume_terms`] at p=1: the Whitney locals of
-    /// [`nedelec_local_dual`], gathered with the per-tet edge signs.
-    fn volume_terms_p1(&self, omega: f64, lefts: &[&[c64]], rights: &[&[c64]]) -> Vec<Vec<c64>> {
-        let zero = c64::new(0.0, 0.0);
-        let n_pairs = lefts.len();
-        let omega2 = omega * omega;
-        let mesh = self.geo.mesh;
-        let mut out = vec![vec![zero; n_pairs]; self.params.len()];
-        let gather = |v: &[c64], t: usize| -> [c64; 6] {
-            std::array::from_fn(|i| v[self.tet_idx[t][i] as usize] * f64::from(self.tet_sign[t][i]))
-        };
-
-        // Material: z_R = Σ_{t ∈ R} lᵀ M_t r.
-        if let Some(m) = self.material {
-            let mut z = vec![vec![zero; n_pairs]; m.n_regions()];
-            for (t, r) in m.region_of_tet().iter().enumerate() {
-                let Some(region) = *r else { continue };
-                let tet = &mesh.tets[t];
-                let base: [[f64; 3]; 4] = std::array::from_fn(|v| mesh.nodes[tet[v] as usize]);
-                let (_, mm, _) = nedelec_local_dual(&base.map(|v| v.map(Dual::cst)));
-                for q in 0..n_pairs {
-                    let (l, r) = (gather(lefts[q], t), gather(rights[q], t));
-                    let mut acc = zero;
-                    for i in 0..6 {
-                        for j in 0..6 {
+                    for i in 0..N {
+                        for j in 0..N {
                             acc += l[i] * r[j] * mm[i][j].re;
                         }
                     }
@@ -1051,13 +928,17 @@ impl<'a> Prepared<'a> {
                 if !tet.iter().any(|&nd| sh.moving[nd as usize]) {
                     continue;
                 }
-                let l_loc: Vec<[c64; 6]> = lefts.iter().map(|l| gather(l, t)).collect();
-                let r_loc: Vec<[c64; 6]> = rights.iter().map(|r| gather(r, t)).collect();
-                let base: [[f64; 3]; 4] = std::array::from_fn(|v| mesh.nodes[tet[v] as usize]);
+                let l_loc: Vec<[c64; N]> = lefts.iter().map(|l| gather(l, t)).collect();
+                let r_loc: Vec<[c64; N]> = rights.iter().map(|r| gather(r, t)).collect();
+                let base = coords(t);
                 let sig_t = self.geo.sigma.map_or(0.0, |s| s[t]);
                 let mass_coeff = self.geo.eps_r[t] * (-omega2) + iomega * sig_t;
+                let perm = match space.tet_orientation(t) {
+                    TetOrientation::EdgeSigns(_) => [0, 1, 2, 3],
+                    TetOrientation::AscendingPerm(perm) => perm,
+                };
                 for a in 0..4 {
-                    let node = tet[a] as usize;
+                    let node = tet[perm[a]] as usize;
                     if !sh.moving[node] {
                         continue;
                     }
@@ -1069,8 +950,8 @@ impl<'a> Prepared<'a> {
                         }
                         let mut dc = base.map(|v| v.map(Dual::cst));
                         dc[a][axis] = Dual::var(base[a][axis]);
-                        let (dk, dm, _) = nedelec_local_dual(&dc);
-                        let da: [[c64; 6]; 6] = std::array::from_fn(|i| {
+                        let (dk, dm, _) = local_dual(&dc);
+                        let da: [[c64; N]; N] = std::array::from_fn(|i| {
                             std::array::from_fn(|j| {
                                 c64::new(dk[i][j].du, 0.0) + mass_coeff * dm[i][j].du
                             })
@@ -1079,9 +960,9 @@ impl<'a> Prepared<'a> {
                             .map(|q| {
                                 let (l, r) = (&l_loc[q], &r_loc[q]);
                                 let mut acc = zero;
-                                for i in 0..6 {
+                                for i in 0..N {
                                     let mut row = zero;
-                                    for j in 0..6 {
+                                    for j in 0..N {
                                         row += da[i][j] * r[j];
                                     }
                                     acc += l[i] * row;
