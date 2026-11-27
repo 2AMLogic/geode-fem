@@ -5,6 +5,7 @@ Maintained automatically by the Loom Guide role; entries are appended, never edi
 
 ### 2026-11-27
 
+- **Issue #1833** (closed): Resync installed Loom roles: Guide emits no #14204 WORK_PLAN check receipt, so every Guide docs PR is docs-only-fast-path ineligible
 - **Issue #1829** (closed): Extract the 30 driven shape-gradient unit tests into a child module
 - **PR #1831**: refactor: move inline driven shape-gradient tests to shape/tests.rs
 
