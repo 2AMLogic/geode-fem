@@ -5,6 +5,8 @@ Maintained automatically by the Loom Guide role; entries are appended, never edi
 
 ### 2026-11-26
 
+- **Issue #1826** (closed): Share the triangle integration loop for waveguide mode field energy
+- **PR #1827**: refactor: share the mode field-shape energy integration loop
 - **PR #1817**: chore(deps): Bump xxhash-rust from 0.8.15 to 0.8.21
 - **Issue #1807** (closed): Consolidate three duplicated Huygens surface walkers in driven::scattering (~145 LOC)
 - **PR #1812**: refactor(scattering): share one closed-surface face walker
