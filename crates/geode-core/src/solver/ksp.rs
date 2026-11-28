@@ -1887,16 +1887,13 @@ mod tests {
         assert!(matches!(err, KspError::Breakdown { .. }));
     }
 
-    /// ILU(0) reduces or matches Jacobi iteration count on a denser
-    /// SPD-ish fixture — direct comparison of preconditioner quality
-    /// on the same Krylov core.
-    #[test]
-    fn ilu0_iterations_le_jacobi_on_spd_ish() {
-        // 5×5 dense-ish symmetric SPD. Jacobi (diagonal only) is far
-        // from the inverse here; ILU(0) is exact LU for this fully
-        // populated pattern.
+    /// Build the shared 5×5 dense-ish symmetric SPD fixture — `A = G + 5I`
+    /// with `G` symmetric — and its right-hand side. Jacobi (diagonal
+    /// only) is far from the inverse here; ILU(0) is exact LU for this
+    /// fully populated pattern. The ILU(0)-vs-Jacobi test and the
+    /// Chebyshev-vs-identity comparison both solve this system.
+    fn spd_ish_5x5() -> (SparseColMat<usize, c64>, Vec<c64>) {
         let n = 5;
-        // Build a symmetric SPD matrix: A = G + 5I with G symmetric.
         let g = [
             [0.0, 0.5, 0.3, 0.2, 0.1],
             [0.5, 0.0, 0.4, 0.3, 0.2],
@@ -1913,6 +1910,16 @@ mod tests {
         }
         let a = SparseColMat::<usize, c64>::try_new_from_triplets(n, n, &trips).unwrap();
         let b: Vec<c64> = (0..n).map(|i| c64::new(i as f64 + 1.0, 0.0)).collect();
+        (a, b)
+    }
+
+    /// ILU(0) reduces or matches Jacobi iteration count on a denser
+    /// SPD-ish fixture — direct comparison of preconditioner quality
+    /// on the same Krylov core.
+    #[test]
+    fn ilu0_iterations_le_jacobi_on_spd_ish() {
+        let (a, b) = spd_ish_5x5();
+        let n = a.nrows();
 
         let cocg = Cocg::new(1e-12, 200);
 
@@ -2181,131 +2188,61 @@ mod tests {
         assert!(report.residual_rel < 1e-10, "{:?}", report);
     }
 
-    /// **Issue #348**: a positive-degree fourth-kind smoother must not
-    /// increase the COCG iteration count versus the unpreconditioned
-    /// (identity) solve on the denser SPD-ish fixture, and must agree on
-    /// the solution. Reports both counts (and the first-kind count) to
-    /// stderr, mirroring the #299 reporting style.
-    #[test]
-    fn chebyshev_fourth_kind_iterations_lt_unpreconditioned_on_spd_ish() {
-        let n = 5;
-        let g = [
-            [0.0, 0.5, 0.3, 0.2, 0.1],
-            [0.5, 0.0, 0.4, 0.3, 0.2],
-            [0.3, 0.4, 0.0, 0.5, 0.3],
-            [0.2, 0.3, 0.5, 0.0, 0.4],
-            [0.1, 0.2, 0.3, 0.4, 0.0],
-        ];
-        let mut trips = Vec::new();
-        for (i, row) in g.iter().enumerate() {
-            for (j, &v_g) in row.iter().enumerate() {
-                let v = if i == j { v_g + 5.0 } else { v_g };
-                trips.push(Triplet::new(i, j, c64::new(v, 0.0)));
-            }
-        }
-        let a = SparseColMat::<usize, c64>::try_new_from_triplets(n, n, &trips).unwrap();
-        let b: Vec<c64> = (0..n).map(|i| c64::new(i as f64 + 1.0, 0.0)).collect();
-
-        let cocg = Cocg::new(1e-12, 500);
-
-        let mut x_id = vec![c64::new(0.0, 0.0); n];
-        let id = IdentityPreconditioner::new(n);
-        let report_id = cocg.solve(a.as_ref(), &b, &mut x_id, &id).unwrap();
-
-        let mut x_c1 = vec![c64::new(0.0, 0.0); n];
-        let c1 = ChebyshevPreconditioner::new(a.as_ref(), 4).unwrap();
-        let report_c1 = cocg.solve(a.as_ref(), &b, &mut x_c1, &c1).unwrap();
-
-        let mut x_c4 = vec![c64::new(0.0, 0.0); n];
-        let c4 = chebyshev_fourth(&a, 4);
-        let report_c4 = cocg.solve(a.as_ref(), &b, &mut x_c4, &c4).unwrap();
-
-        assert!(report_id.converged && report_c1.converged && report_c4.converged);
-        assert!(
-            report_c4.iters <= report_id.iters,
-            "fourth-kind iters ({}) must not exceed unpreconditioned iters ({})",
-            report_c4.iters,
-            report_id.iters,
-        );
-
-        // Solution must agree with the unpreconditioned run.
-        let diff: f64 = x_c4
-            .iter()
-            .zip(x_id.iter())
-            .map(|(a, b)| (a - b).norm_sqr())
-            .sum::<f64>()
-            .sqrt();
-        let norm: f64 = x_id.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
-        assert!(diff / norm < 1e-8);
-
-        eprintln!(
-            "[issue #348] Chebyshev kinds vs unpreconditioned on 5×5 SPD-ish: \
-             identity iters={}, first-kind(deg=4) iters={}, \
-             fourth-kind(deg=4) iters={}, interval={:?}",
-            report_id.iters,
-            report_c1.iters,
-            report_c4.iters,
-            c4.spectral_interval(),
-        );
-    }
-
-    /// A positive-degree Chebyshev smoother must reduce the COCG
+    /// A positive-degree Chebyshev smoother must not increase the COCG
     /// iteration count versus the **unpreconditioned** (identity) solve
-    /// on a denser SPD-ish fixture — the same fixture the ILU-vs-Jacobi
-    /// unit test uses. Reports both counts to stderr.
+    /// on the denser SPD-ish fixture — the same fixture the ILU-vs-Jacobi
+    /// unit test uses — and must agree on the solution. First kind
+    /// (**issue #299**) and fourth kind (**issue #348**) are held to the
+    /// same contract against one identity solve. Reports all three
+    /// counts and each smoother's spectral interval to stderr.
     #[test]
     fn chebyshev_iterations_lt_unpreconditioned_on_spd_ish() {
-        let n = 5;
-        let g = [
-            [0.0, 0.5, 0.3, 0.2, 0.1],
-            [0.5, 0.0, 0.4, 0.3, 0.2],
-            [0.3, 0.4, 0.0, 0.5, 0.3],
-            [0.2, 0.3, 0.5, 0.0, 0.4],
-            [0.1, 0.2, 0.3, 0.4, 0.0],
-        ];
-        let mut trips = Vec::new();
-        for (i, row) in g.iter().enumerate() {
-            for (j, &v_g) in row.iter().enumerate() {
-                let v = if i == j { v_g + 5.0 } else { v_g };
-                trips.push(Triplet::new(i, j, c64::new(v, 0.0)));
-            }
-        }
-        let a = SparseColMat::<usize, c64>::try_new_from_triplets(n, n, &trips).unwrap();
-        let b: Vec<c64> = (0..n).map(|i| c64::new(i as f64 + 1.0, 0.0)).collect();
+        let (a, b) = spd_ish_5x5();
+        let n = a.nrows();
 
         let cocg = Cocg::new(1e-12, 500);
 
         let mut x_id = vec![c64::new(0.0, 0.0); n];
         let id = IdentityPreconditioner::new(n);
         let report_id = cocg.solve(a.as_ref(), &b, &mut x_id, &id).unwrap();
+        assert!(report_id.converged, "{report_id:?}");
+        let norm_id: f64 = x_id.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
 
-        let mut x_cheb = vec![c64::new(0.0, 0.0); n];
-        let cheb = ChebyshevPreconditioner::new(a.as_ref(), 4).unwrap();
-        let report_cheb = cocg.solve(a.as_ref(), &b, &mut x_cheb, &cheb).unwrap();
-
-        assert!(report_id.converged && report_cheb.converged);
-        assert!(
-            report_cheb.iters <= report_id.iters,
-            "Chebyshev iters ({}) must not exceed unpreconditioned iters ({})",
-            report_cheb.iters,
-            report_id.iters,
-        );
-        // Solutions must agree.
-        let diff: f64 = x_cheb
-            .iter()
-            .zip(x_id.iter())
-            .map(|(a, b)| (a - b).norm_sqr())
-            .sum::<f64>()
-            .sqrt();
-        let norm: f64 = x_id.iter().map(|x| x.norm_sqr()).sum::<f64>().sqrt();
-        assert!(diff / norm < 1e-8);
-
-        eprintln!(
-            "[issue #299] Chebyshev(deg=4) vs unpreconditioned on 5×5 SPD-ish: \
-             identity iters={}, Chebyshev iters={}, interval={:?}",
-            report_id.iters,
-            report_cheb.iters,
-            cheb.spectral_interval(),
-        );
+        let smoothers = [
+            (
+                "first-kind(deg=4)",
+                ChebyshevPreconditioner::new(a.as_ref(), 4).unwrap(),
+            ),
+            ("fourth-kind(deg=4)", chebyshev_fourth(&a, 4)),
+        ];
+        for (label, cheb) in &smoothers {
+            let mut x = vec![c64::new(0.0, 0.0); n];
+            let report = cocg.solve(a.as_ref(), &b, &mut x, cheb).unwrap();
+            assert!(report.converged, "{label}: {report:?}");
+            assert!(
+                report.iters <= report_id.iters,
+                "{label} iters ({}) must not exceed unpreconditioned iters ({})",
+                report.iters,
+                report_id.iters,
+            );
+            let diff: f64 = x
+                .iter()
+                .zip(x_id.iter())
+                .map(|(xs, xr)| (xs - xr).norm_sqr())
+                .sum::<f64>()
+                .sqrt();
+            let rel_diff = diff / norm_id;
+            assert!(
+                rel_diff < 1e-8,
+                "{label}: relative solution difference {rel_diff:e}"
+            );
+            eprintln!(
+                "[issue #299/#348] {label} vs unpreconditioned on 5×5 SPD-ish: \
+                 identity iters={}, {label} iters={}, interval={:?}",
+                report_id.iters,
+                report.iters,
+                cheb.spectral_interval(),
+            );
+        }
     }
 }
