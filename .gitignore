@@ -306,7 +306,4 @@ vendor/*/Cargo.lock
 !benchmarks/patch_antenna_conformal/recentre/palace/sm57_p2/*.log
 !benchmarks/patch_antenna_conformal/recentre/palace/sm57_p3/*.log
 !benchmarks/transmon_diffopt/c_sigma_bracket_grounded_box_attempt1.log
-!papers/motor-gradient-optimization/motor-gradient-optimization.1/figures/src/data/m1_tables.log
-!papers/motor-gradient-optimization/motor-gradient-optimization.2/figures/src/data/m1_tables.log
-!papers/motor-gradient-optimization/motor-gradient-optimization.3/figures/src/data/m1_tables.log
 !reference/fixtures/transmon_palace/results_p1_target2/target2_L1/*.log

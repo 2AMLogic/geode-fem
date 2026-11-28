@@ -15,6 +15,8 @@ public_repo_url: "https://github.com/rjwalters/geode-fem"
 science_card_id: 3
 ---
 
+> **Archived versions.** Only the current and the Zenodo-published version of this thread are kept in-tree. Earlier `<thread>.N/` snapshots and their critic siblings (mentioned in the history below) were pruned from `main` in #1416 and live at the git tag `papers-archive-2026-11`; recover one with `git checkout papers-archive-2026-11 -- papers/<thread>/<thread>.N`.
+
 # v23 — published on Zenodo (v1), 2026-10-25 — CURRENT
 
 **Published.** `motor-gradient-optimization.23/` is the paper of record for Zenodo v1, 43 pages.
